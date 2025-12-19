@@ -1,77 +1,108 @@
 {% extends "base.html" %}
 {% block content %}
 
-<div class="card">
-  <h2>Orders</h2>
-  <p class="muted">Track your placed orders and transport quotes.</p>
+<div class="row space">
+  <div>
+    <h2>Orders</h2>
+    <div class="muted">Buyer: accept/decline quotes. Transporter: quote open orders. Farmer: view relevant orders.</div>
+  </div>
+  <div class="pillrow">
+    {% if user.role == 'buyer' %}
+      <a class="btn btn-ghost" href="/buyer">Products</a>
+      <a class="btn btn-ghost" href="/checkout">Checkout</a>
+    {% elif user.role == 'farmer' %}
+      <a class="btn btn-ghost" href="/farmer">Dashboard</a>
+    {% elif user.role == 'transporter' %}
+      <a class="btn btn-ghost" href="/transport">Dashboard</a>
+    {% endif %}
+    <a class="btn btn-light" href="/profile">Profile</a>
+  </div>
+</div>
 
+<div class="card">
   {% if orders %}
     <div class="orders">
       {% for pack in orders %}
+
+        {# --- Normalize pack for both dict packs and object packs --- #}
+        {% if pack is mapping %}
+          {% set o = pack.get('order') %}
+          {% set items_list = pack.get('items', pack.get('order_items', [])) %}
+          {% set quotes_list = pack.get('quotes', []) %}
+        {% else %}
+          {% set o = pack.order %}
+          {# IMPORTANT: never use pack.items here (it conflicts with dict.items) #}
+          {% set items_list = pack.order_items if pack.order_items is defined else (pack.items_list if pack.items_list is defined else []) %}
+          {% set quotes_list = pack.quotes if pack.quotes is defined else [] %}
+        {% endif %}
+
         <div class="order-card">
           <div class="row">
             <div>
-              <div class="strong">Order {{ pack["order_id"] }}</div>
-              <div class="muted small">
-                {{ pack["origin"] }} → {{ pack["dest"] }}
-                {% if pack.get("eta_hours") %} · ETA {{ pack["eta_hours"] }} hrs{% endif %}
-                · {{ pack["created_at"] }}
-              </div>
+              <div class="strong">{{ o.id }}</div>
+              <div class="muted small">{{ o.origin }} → {{ o.dest }} · {{ o.created_at }}</div>
             </div>
-            <div class="status">{{ pack["status"] }}</div>
-          </div>
-
-          <div class="summary">
-            <div class="sumrow"><span>Items total</span><b>{{ money(pack["items_total"]) }}</b></div>
-            <div class="sumrow"><span>Transport</span><b>{{ money(pack["transport"]) }}</b></div>
-            <div class="sumrow"><span>Grand total</span><b>{{ money(pack["grand_total"]) }}</b></div>
+            <div class="status">{{ o.status }}</div>
           </div>
 
           <div class="spacer"></div>
 
           <div class="muted small strong">Items</div>
-          <div class="items">
-            {% for it in pack["items"] %}
-              <div class="itemrow">
-                <span>{{ it["name"] }} × {{ it["qty"] }}</span>
-                <b>{{ money(it["subtotal"]) }}</b>
+          <ul class="list">
+            {% if items_list %}
+              {% for it in items_list %}
+                <li>{{ it.product_name }} ({{ it.qty }} {{ it.product_unit }}) — {{ it.farmer_name }}</li>
+              {% endfor %}
+            {% else %}
+              <li class="muted">No items found.</li>
+            {% endif %}
+          </ul>
+
+          <div class="spacer"></div>
+
+          <div class="muted small strong">Transport quotes</div>
+
+          {% if quotes_list %}
+            <div class="table">
+              <div class="thead">
+                <div>Transporter</div><div>Price</div><div>ETA</div><div>Status</div>
+                {% if user.role == 'buyer' and o.status == 'NEEDS_QUOTES' %}<div>Action</div>{% endif %}
               </div>
-            {% endfor %}
-          </div>
 
-          {% if pack.get("quotes") %}
-            <div class="spacer"></div>
-            <div class="muted small strong">Transport Quotes</div>
+              {% for q in quotes_list %}
+                <div class="trow">
+                  <div>{{ q.transporter_name or q.transporter_phone }}</div>
+                  <div><b>{{ money(q.price) }}</b></div>
+                  <div class="muted">{{ q.eta_hours }} hrs</div>
+                  <div class="muted small">{{ q.status }}</div>
 
-            <div class="quotes">
-              {% for q in pack["quotes"] %}
-                <div class="quote-row">
-                  <div>
-                    <div class="strong">{{ q["transporter_phone"] }}</div>
-                    <div class="muted small">Quoted: {{ money(q["amount"]) }} · {{ q["created_at"] }}</div>
-                  </div>
+                  {% if user.role == 'buyer' and o.status == 'NEEDS_QUOTES' %}
+                    <div>
+                      {% if q.status == 'SUBMITTED' %}
+                        <form method="post" action="/quote/accept" class="inline">
+                          <input type="hidden" name="order_id" value="{{ o.id }}">
+                          <input type="hidden" name="quote_id" value="{{ q.id }}">
+                          <button class="btn btn-primary" type="submit">Accept</button>
+                        </form>
 
-                  {% if pack["status"] in ["AWAITING_QUOTES", "QUOTED"] %}
-                    <form method="post" action="/quote/accept" class="inline">
-                      <input type="hidden" name="order_id" value="{{ pack['order_id'] }}">
-                      <input type="hidden" name="quote_id" value="{{ q['id'] }}">
-                      <button class="btn btn-primary" type="submit">Accept</button>
-                    </form>
-
-                    <form method="post" action="/quote/decline" class="inline">
-                      <input type="hidden" name="order_id" value="{{ pack['order_id'] }}">
-                      <input type="hidden" name="quote_id" value="{{ q['id'] }}">
-                      <button class="btn btn-dark" type="submit">Decline</button>
-                    </form>
-                  {% else %}
-                    <div class="muted small">Locked ({{ pack["status"] }})</div>
+                        <form method="post" action="/quote/decline" class="inline">
+                          <input type="hidden" name="order_id" value="{{ o.id }}">
+                          <input type="hidden" name="quote_id" value="{{ q.id }}">
+                          <button class="btn btn-light" type="submit">Decline</button>
+                        </form>
+                      {% else %}
+                        <span class="muted small">—</span>
+                      {% endif %}
+                    </div>
                   {% endif %}
                 </div>
               {% endfor %}
             </div>
+          {% else %}
+            <p class="muted">No quotes yet.</p>
           {% endif %}
-
         </div>
+
       {% endfor %}
     </div>
   {% else %}
