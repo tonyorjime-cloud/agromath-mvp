@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="card">
+  <div class="row">
+    <div>
+      <h2>Profile</h2>
+      <p class="muted">Phone: <b>{{ user.phone }}</b></p>
+    </div>
+    <div class="right">
+      <a class="btn btn-light" href="/logout">Logout</a>
+    </div>
+  </div>
+
+  <form method="post" action="/profile" class="stack">
+    <label class="label">Name</label>
+    <input name="name" placeholder="Your name" value="{{ user.name or '' }}">
+
+    <label class="label">Role</label>
+    <select name="role" required>
+      <option value="" {% if not user.role %}selected{% endif %}>Select role…</option>
+      <option value="buyer" {% if user.role=='buyer' %}selected{% endif %}>Buyer</option>
+      <option value="farmer" {% if user.role=='farmer' %}selected{% endif %}>Farmer</option>
+      <option value="transporter" {% if user.role=='transporter' %}selected{% endif %}>Transporter</option>
+    </select>
+
+    <label class="label">Hub / Location (optional)</label>
+    <input name="hub" placeholder="e.g., Makurdi, Jos, Abuja" value="{{ user.hub or '' }}">
+
+    <button class="btn btn-primary" type="submit">Save</button>
+  </form>
+
+  {% if user.phone == admin_phone %}
+    <div class="spacer"></div>
+    <a class="btn btn-dark" href="/admin">Admin approvals</a>
+  {% endif %}
+</div>
+
+{% endblock %}

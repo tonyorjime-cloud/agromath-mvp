@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="row space">
+  <div>
+    <h2>Transporter Dashboard</h2>
+    <div class="muted">Quote open orders. When a buyer accepts your quote, deliver and mark it delivered.</div>
+  </div>
+  <div class="pillrow">
+    <a class="btn btn-ghost" href="/orders">Orders</a>
+    <a class="btn btn-light" href="/profile">Profile</a>
+  </div>
+</div>
+
+<div class="grid2">
+  <div class="card">
+    <h3>Open orders needing quotes</h3>
+    {% if open_orders %}
+      <div class="orders">
+        {% for o in open_orders %}
+          <div class="order-card">
+            <div class="row">
+              <div>
+                <div class="strong">{{ o.id }}</div>
+                <div class="muted small">{{ o.origin }} → {{ o.dest }} · {{ o.created_at }}</div>
+                <div class="muted small">Existing quotes: {{ o.quote_count }}</div>
+              </div>
+              <div class="status">{{ o.status }}</div>
+            </div>
+
+            <div class="spacer"></div>
+            <form method="post" action="/transport/quote" class="row">
+              <input type="hidden" name="order_id" value="{{ o.id }}">
+              <input name="price" type="number" min="1" placeholder="Your price (NGN)" required style="max-width:200px">
+              <input name="eta_hours" type="number" min="1" value="24" placeholder="ETA (hrs)" required style="max-width:140px">
+              <button class="btn btn-primary" type="submit">Submit Quote</button>
+            </form>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="muted">No open orders right now.</p>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h3>Accepted orders (deliver)</h3>
+    {% if accepted_orders %}
+      <div class="orders">
+        {% for o in accepted_orders %}
+          <div class="order-card">
+            <div class="row">
+              <div>
+                <div class="strong">{{ o.id }}</div>
+                <div class="muted small">{{ o.origin }} → {{ o.dest }} · ETA {{ o.eta_hours }} hrs</div>
+                <div class="muted small">Transport: <b>{{ money(o.price) }}</b></div>
+              </div>
+              <div class="status">{{ o.status }}</div>
+            </div>
+
+            <div class="spacer"></div>
+            <form method="post" action="/transport/deliver" class="inline">
+              <input type="hidden" name="order_id" value="{{ o.id }}">
+              <button class="btn btn-dark" type="submit">Mark Delivered</button>
+            </form>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="muted">None assigned yet.</p>
+    {% endif %}
+
+    <div class="spacer"></div>
+    <h3>Your quote history</h3>
+    {% if my_quotes %}
+      <div class="table">
+        <div class="thead">
+          <div>Order</div><div>Price</div><div>ETA</div><div>Status</div>
+        </div>
+        {% for q in my_quotes %}
+          <div class="trow">
+            <div class="strong">{{ q.order_id }} <span class="muted small">({{ q.origin }}→{{ q.dest }})</span></div>
+            <div><b>{{ money(q.price) }}</b></div>
+            <div class="muted">{{ q.eta_hours }} hrs</div>
+            <div class="muted small">{{ q.status }}</div>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="muted">No quotes submitted yet.</p>
+    {% endif %}
+  </div>
+</div>
+
+{% endblock %}

@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>AgroMath MVP</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="topbar">
+    <div class="container row space">
+      <div class="brand">
+        <div class="logo">A</div>
+        <div>
+          <div class="brandname">AgroMath</div>
+          <div class="tag">Farm → City logistics, MVP</div>
+        </div>
+      </div>
+
+      <div class="nav">
+        {% if session.get("uid") %}
+          <a class="navlink" href="/dashboard">Dashboard</a>
+          <a class="navlink" href="/orders">Orders</a>
+          <a class="navlink" href="/profile">Profile</a>
+          <a class="navlink" href="/logout">Logout</a>
+        {% else %}
+          <a class="navlink" href="/login">Login</a>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="container">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <div class="flashwrap">
+          {% for cat, msg in messages %}
+            <div class="flash {{ cat }}">{{ msg }}</div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+
+    {% block content %}{% endblock %}
+  </div>
+
+  <div class="footer">
+    <div class="container muted small">
+      Built for testing. No payments, no SMS, no escrow (yet).
+    </div>
+  </div>
+</body>
+</html>

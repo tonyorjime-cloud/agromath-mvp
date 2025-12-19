@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="row space">
+  <div>
+    <h2>Checkout</h2>
+    <div class="muted">Confirm your cart, then place the order (transport quotes come later).</div>
+  </div>
+  <div class="pillrow">
+    <a class="btn btn-ghost" href="/buyer">Back to products</a>
+    <a class="btn btn-ghost" href="/orders">Orders</a>
+  </div>
+</div>
+
+<div class="grid2">
+  <div class="card">
+    <h3>Cart Items</h3>
+
+    {% if items %}
+      <div class="table">
+        <div class="thead">
+          <div>Item</div><div>Farmer</div><div>Qty</div><div>Unit</div><div>Line</div><div></div>
+        </div>
+        {% for it in items %}
+          <div class="trow">
+            <div class="strong">{{ it.product.name }}</div>
+            <div class="muted">{{ it.product.farmer_name or "—" }}</div>
+            <div>{{ it.qty }}</div>
+            <div>{{ money(it.product.price) }}</div>
+            <div><b>{{ money(it.line_total) }}</b></div>
+            <div>
+              <form method="post" action="/cart/remove" class="inline">
+                <input type="hidden" name="product_id" value="{{ it.product.id }}">
+                <button class="btn btn-light" type="submit">Remove</button>
+              </form>
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+
+      <div class="spacer"></div>
+      <div class="summary">
+        <div class="sumrow"><span>Subtotal</span><b>{{ money(subtotal) }}</b></div>
+      </div>
+
+    {% else %}
+      <p class="muted">Your cart is empty.</p>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h3>Place Order</h3>
+    <form method="post" action="/order/place" class="stack">
+      <label class="label">Origin (pickup)</label>
+      <input name="origin" placeholder="e.g., Makurdi Hub" required>
+      <label class="label">Destination</label>
+      <input name="dest" placeholder="e.g., Abuja" required>
+      <button class="btn btn-primary" type="submit" {% if not items %}disabled{% endif %}>Place Order</button>
+    </form>
+
+    <p class="muted small">After placing the order, transporters will submit quotes. You can accept or decline.</p>
+  </div>
+</div>
+
+{% endblock %}

@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="row space">
+  <div>
+    <h2>Buyer Dashboard</h2>
+    <div class="muted">Welcome{% if user.name %}, {{ user.name }}{% endif %}. Add items, then checkout and place an order.</div>
+  </div>
+  <div class="pillrow">
+    <a class="btn btn-ghost" href="/checkout">Cart ({{ cart_count }})</a>
+    <a class="btn btn-ghost" href="/orders">Orders</a>
+    <a class="btn btn-light" href="/profile">Profile</a>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Products</h3>
+  <div class="muted small">Only approved farmers appear here.</div>
+
+  {% if products %}
+    <div class="table">
+      <div class="thead">
+        <div>Item</div><div>Farmer</div><div>Hub</div><div>Price</div><div></div>
+      </div>
+
+      {% for p in products %}
+        <div class="trow">
+          <div class="strong">{{ p.name }} <span class="muted small">({{ p.unit }})</span></div>
+          <div>{{ p.farmer_name or "—" }}</div>
+          <div class="muted">{{ p.farmer_hub or "—" }}</div>
+          <div><b>{{ money(p.price) }}</b></div>
+          <div>
+            <form method="post" action="/cart/add" class="inline">
+              <input type="hidden" name="product_id" value="{{ p.id }}">
+              <input class="qty" name="qty" type="number" min="1" value="1" style="width:80px">
+              <button class="btn btn-primary" type="submit">Add</button>
+            </form>
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="muted">No products yet. Ask a farmer to register and get approved.</p>
+  {% endif %}
+</div>
+
+{% endblock %}
