@@ -44,6 +44,97 @@
     {% block content %}{% endblock %}
   </div>
 
+  <!-- Phase 1 notifications: in-app polling + unique sound -->
+  {% if session.get("uid") %}
+    <div id="agroToast" class="toast" style="display:none"></div>
+    <audio id="agroNotifySound" preload="auto">
+      <source src="{{ url_for('static', filename='notify.wav') }}" type="audio/wav">
+    </audio>
+    <script>
+      (function(){
+        const toast = document.getElementById('agroToast');
+        const sound = document.getElementById('agroNotifySound');
+        const keyLast = 'agro_last_notif_id';
+        const keySound = 'agro_sound_enabled';
+
+        function getLast(){
+          const v = localStorage.getItem(keyLast);
+          const n = parseInt(v || '0', 10);
+          return isNaN(n) ? 0 : n;
+        }
+        function setLast(id){ localStorage.setItem(keyLast, String(id||0)); }
+        function soundEnabled(){
+          const v = localStorage.getItem(keySound);
+          return v === null ? true : (v === 'true');
+        }
+
+        function showToast(message, link){
+          toast.innerHTML = '';
+          const box = document.createElement('div');
+          box.className = 'toast-inner';
+          const text = document.createElement('div');
+          text.className = 'toast-text';
+          text.textContent = message;
+          box.appendChild(text);
+
+          if (link){
+            const a = document.createElement('a');
+            a.className = 'toast-link';
+            a.href = link;
+            a.textContent = 'Open';
+            box.appendChild(a);
+          }
+
+          const btn = document.createElement('button');
+          btn.className = 'toast-close';
+          btn.type = 'button';
+          btn.textContent = '×';
+          btn.onclick = () => { toast.style.display='none'; };
+          box.appendChild(btn);
+
+          toast.appendChild(box);
+          toast.style.display = 'block';
+
+          // auto-hide
+          setTimeout(()=>{ toast.style.display='none'; }, 6000);
+        }
+
+        async function poll(){
+          try {
+            const since = getLast();
+            const res = await fetch('/api/notifications?since=' + encodeURIComponent(since), {cache:'no-store'});
+            if (!res.ok) return;
+            const data = await res.json();
+            if (data && data.latest_id !== undefined){
+              setLast(data.latest_id);
+            }
+            if (data && data.items && data.items.length){
+              const first = data.items[0];
+              if (soundEnabled()){
+                try { await sound.play(); } catch(e) { /* browser may block until user interacts */ }
+              }
+              showToast(first.message, first.link);
+            }
+          } catch (e) {
+            // silent: polling shouldn't break the UI
+          }
+        }
+
+        // Start polling
+        setTimeout(poll, 1500);
+        setInterval(poll, 10000);
+
+        // Optional: quick toggle via keyboard (Shift+N)
+        document.addEventListener('keydown', (e)=>{
+          if (e.shiftKey && (e.key === 'N' || e.key === 'n')){
+            localStorage.setItem(keySound, String(!soundEnabled()));
+            showToast('Notification sound: ' + (soundEnabled() ? 'ON' : 'OFF'), '');
+          }
+        });
+      })();
+    </script>
+  {% endif %}
+
   <div class="footer">
     <div class="container muted small">
       Built for testing. No payments, no SMS, no escrow (yet).

@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 import psycopg2
 import psycopg2.extras
 
-from flask import Flask, g, redirect, render_template, request, session, url_for, flash
+from flask import Flask, g, redirect, render_template, request, session, url_for, flash, jsonify
 
 APP_TITLE = "AgroMath MVP"
 
@@ -189,6 +189,18 @@ def ensure_schema_sqlite() -> None:
         )
     """)
 
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS notifications(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            message TEXT NOT NULL,
+            link TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+    """)
+
     # Lightweight migrations for older dbs
     tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
     if "users" in tables:
@@ -280,6 +292,17 @@ def ensure_schema_postgres() -> None:
                 );
             """)
 
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS notifications(
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES users(id),
+                    kind TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    link TEXT,
+                    created_at TEXT NOT NULL
+                );
+            """)
+
         conn.commit()
     finally:
         conn.close()
@@ -328,6 +351,30 @@ def role_required(*roles):
             return fn(*args, **kwargs)
         return wrapper
     return deco
+
+
+# -----------------------------
+# Notifications (Phase 1: polling + sound)
+# -----------------------------
+
+def notify_user(user_id: int, kind: str, message: str, link: str = "/orders") -> None:
+    """Create an in-app notification for a specific user."""
+    if not user_id:
+        return
+    db_execute(
+        f"INSERT INTO notifications(user_id, kind, message, link, created_at) VALUES({_ph()}, {_ph()}, {_ph()}, {_ph()}, {_ph()})",
+        (user_id, kind, message, link, now_str()),
+    )
+
+
+def notify_role(role: str, kind: str, message: str, link: str = "/orders") -> None:
+    """Notify all active users in a role (used for transporters on new orders)."""
+    rows = db_fetchall(
+        f"SELECT id FROM users WHERE role = {_ph()} AND is_active = 1",
+        (role,),
+    )
+    for r in rows:
+        notify_user(int(r["id"]), kind, message, link)
 
 
 # -----------------------------
@@ -423,6 +470,40 @@ def verify():
 def logout():
     session.clear()
     return redirect(url_for("login"))
+
+
+@app.get("/api/notifications")
+@login_required
+def api_notifications():
+    """Return new notifications for the logged-in user.
+
+    The client passes `since=<last_seen_id>`; we respond with notifications where id > since.
+    This is deliberately simple (Phase 1) and works without websockets/push.
+    """
+    u = current_user()
+    since_raw = request.args.get("since", "0")
+    try:
+        since = int(since_raw)
+    except Exception:
+        since = 0
+
+    rows = db_fetchall(
+        f"SELECT id, kind, message, link, created_at FROM notifications WHERE user_id = {_ph()} AND id > {_ph()} ORDER BY id ASC LIMIT 25",
+        (u["id"], since),
+    )
+    items = [
+        {
+            "id": int(r["id"]),
+            "kind": r["kind"],
+            "message": r["message"],
+            "link": r.get("link") or "",
+            "created_at": r["created_at"],
+        }
+        for r in rows
+    ]
+
+    latest_id = items[-1]["id"] if items else since
+    return jsonify({"latest_id": latest_id, "items": items})
 
 
 # -----------------------------
@@ -689,6 +770,17 @@ def order_place():
         )
 
     db_commit()
+
+    # Phase-1 in-app notifications
+    # Notify all active transporters that a new order needs quotes
+    for tr in db_fetchall("SELECT id FROM users WHERE role='transporter' AND is_active=1"):
+        notify_user(tr["id"], "NEW_ORDER", f"New order {oid} needs transport quotes.")
+
+    # Notify any farmers whose products are in the order
+    farmer_ids = sorted({by_id.get(str(pid), {}).get("farmer_user_id") for pid in cart.keys() if by_id.get(str(pid))})
+    for fid in [x for x in farmer_ids if x]:
+        notify_user(int(fid), "NEW_ORDER", f"New order {oid} includes your products.")
+
     set_cart({})
     flash(f"Order {oid} placed. Waiting for transporter quotes.", "ok")
     return redirect(url_for("orders"))
@@ -741,7 +833,8 @@ def orders():
             ORDER BY q.created_at DESC
         """, (o["id"],))
 
-        out.append({"order": o, "items": items, "quotes": quotes})
+        # NOTE: avoid using key name "items" because Jinja treats `pack.items` as dict.items() (a method).
+        out.append({"order": o, "line_items": items, "quotes": quotes})
 
     return render_template("orders.html", user=u, orders=out)
 
@@ -782,6 +875,16 @@ def quote_accept():
     )
     db_commit()
 
+    # Notifications
+    notify_user(int(q["transporter_user_id"]), "QUOTE_ACCEPTED", f"Your quote was accepted for order {order_id}.")
+
+    declined = db_fetchall(
+        f"SELECT transporter_user_id FROM quotes WHERE order_id={_ph()} AND id<>{_ph()}",
+        (order_id, quote_id),
+    )
+    for d in declined:
+        notify_user(int(d["transporter_user_id"]), "QUOTE_DECLINED", f"Another quote was accepted for order {order_id}.")
+
     flash("Quote accepted. Transporter can now deliver.", "ok")
     return redirect(url_for("orders"))
 
@@ -808,6 +911,10 @@ def quote_decline():
         (quote_id, order_id),
     )
     db_commit()
+
+    q = db_fetchone(f"SELECT transporter_user_id FROM quotes WHERE id={_ph()}", (quote_id,))
+    if q:
+        notify_user(int(q["transporter_user_id"]), "QUOTE_DECLINED", f"Buyer declined your quote for order {order_id}.")
     flash("Quote declined.", "ok")
     return redirect(url_for("orders"))
 
@@ -956,6 +1063,12 @@ def transport_quote():
         (order_id, u["id"], price, eta_hours, now_str()),
     )
     db_commit()
+
+    # Notify buyer: quote arrived
+    buyer = db_fetchone(f"SELECT buyer_user_id FROM orders WHERE id={_ph()}", (order_id,))
+    if buyer:
+        notify_user(int(buyer["buyer_user_id"]), "QUOTE", f"New transport quote received for order {order_id}.")
+
     flash("Quote submitted.", "ok")
     return redirect(url_for("transporter_dashboard"))
 
@@ -987,6 +1100,17 @@ def transport_deliver():
     db_execute(f"UPDATE quotes SET status='DELIVERED' WHERE id={_ph()}", (q["id"],))
     db_execute(f"UPDATE orders SET status='DELIVERED' WHERE id={_ph()}", (order_id,))
     db_commit()
+
+    # Notifications
+    buyer = db_fetchone(f"SELECT buyer_user_id FROM orders WHERE id={_ph()}", (order_id,))
+    if buyer:
+        notify_user(int(buyer["buyer_user_id"]), "DELIVERED", f"Order {order_id} marked delivered.")
+
+    for fr in db_fetchall(
+        f"SELECT DISTINCT p.farmer_user_id AS uid FROM order_items oi JOIN products p ON p.id=oi.product_id WHERE oi.order_id={_ph()}",
+        (order_id,),
+    ):
+        notify_user(int(fr["uid"]), "DELIVERED", f"Order {order_id} has been delivered.")
 
     flash("Order marked delivered.", "ok")
     return redirect(url_for("transporter_dashboard"))

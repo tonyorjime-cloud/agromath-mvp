@@ -23,19 +23,7 @@
   {% if orders %}
     <div class="orders">
       {% for pack in orders %}
-
-        {# --- Normalize pack for both dict packs and object packs --- #}
-        {% if pack is mapping %}
-          {% set o = pack.get('order') %}
-          {% set items_list = pack.get('items', pack.get('order_items', [])) %}
-          {% set quotes_list = pack.get('quotes', []) %}
-        {% else %}
-          {% set o = pack.order %}
-          {# IMPORTANT: never use pack.items here (it conflicts with dict.items) #}
-          {% set items_list = pack.order_items if pack.order_items is defined else (pack.items_list if pack.items_list is defined else []) %}
-          {% set quotes_list = pack.quotes if pack.quotes is defined else [] %}
-        {% endif %}
-
+        {% set o = pack.order %}
         <div class="order-card">
           <div class="row">
             <div>
@@ -49,27 +37,23 @@
 
           <div class="muted small strong">Items</div>
           <ul class="list">
-            {% if items_list %}
-              {% for it in items_list %}
-                <li>{{ it.product_name }} ({{ it.qty }} {{ it.product_unit }}) — {{ it.farmer_name }}</li>
-              {% endfor %}
-            {% else %}
-              <li class="muted">No items found.</li>
-            {% endif %}
+            {% for it in pack.line_items %}
+              <li>{{ it.product_name }} ({{ it.qty }} {{ it.product_unit }}) — {{ it.farmer_name }}</li>
+            {% endfor %}
           </ul>
 
           <div class="spacer"></div>
 
           <div class="muted small strong">Transport quotes</div>
 
-          {% if quotes_list %}
+          {% if pack.quotes %}
             <div class="table">
               <div class="thead">
                 <div>Transporter</div><div>Price</div><div>ETA</div><div>Status</div>
                 {% if user.role == 'buyer' and o.status == 'NEEDS_QUOTES' %}<div>Action</div>{% endif %}
               </div>
 
-              {% for q in quotes_list %}
+              {% for q in pack.quotes %}
                 <div class="trow">
                   <div>{{ q.transporter_name or q.transporter_phone }}</div>
                   <div><b>{{ money(q.price) }}</b></div>
@@ -102,7 +86,6 @@
             <p class="muted">No quotes yet.</p>
           {% endif %}
         </div>
-
       {% endfor %}
     </div>
   {% else %}
