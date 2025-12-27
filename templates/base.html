@@ -1,64 +1,46 @@
 <!DOCTYPE html>
 <html lang="en" data-theme="light">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>{{ title or "AgroMath" }}</title>
+  <meta charset="UTF-8">
+  <title>AgroMath</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="stylesheet" href="/static/style.css">
 </head>
+
 <body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">🌾</span>
+      <span class="name">AgroMath</span>
+    </div>
 
-<nav class="topbar">
-  <div class="brand">AgroMath</div>
+    <div class="top-actions">
+      <button id="themeToggle" class="btn btn-toggle">🌙 / ☀️</button>
+      {% if user %}
+        <a href="/profile" class="btn btn-ghost">Profile</a>
+        <a href="/logout" class="btn btn-ghost">Logout</a>
+      {% endif %}
+    </div>
+  </header>
 
-  <div class="nav-actions">
-    <button id="themeToggle" class="nav-btn">🌗 Theme</button>
-    <button id="soundToggle" class="nav-btn">🔔 Sound</button>
-    <a href="/profile" class="nav-link">Profile</a>
-    <a href="/logout" class="nav-link">Logout</a>
-  </div>
-</nav>
-
-<main class="container">
-  {% block content %}{% endblock %}
-</main>
-
-<audio id="notifySound" preload="auto">
-  <source src="/static/notify.wav" type="audio/wav">
-</audio>
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
 
 <script>
-  // ---------- THEME ----------
   const root = document.documentElement;
-  const themeBtn = document.getElementById("themeToggle");
+  const toggle = document.getElementById("themeToggle");
 
-  let theme = localStorage.getItem("theme") || "light";
-  root.setAttribute("data-theme", theme);
+  const savedTheme = localStorage.getItem("theme");
+  if (savedTheme) root.setAttribute("data-theme", savedTheme);
 
-  themeBtn.onclick = () => {
-    theme = theme === "light" ? "dark" : "light";
-    root.setAttribute("data-theme", theme);
-    localStorage.setItem("theme", theme);
+  toggle.onclick = () => {
+    const current = root.getAttribute("data-theme");
+    const next = current === "dark" ? "light" : "dark";
+    root.setAttribute("data-theme", next);
+    localStorage.setItem("theme", next);
   };
+</script>
 
-  // ---------- SOUND ----------
-  const soundBtn = document.getElementById("soundToggle");
-  const bell = document.getElementById("notifySound");
-
-  let soundEnabled = localStorage.getItem("sound") === "on";
-
-  function updateSoundBtn() {
-    soundBtn.textContent = soundEnabled ? "🔔 Sound On" : "🔕 Sound Off";
-  }
-
-  updateSoundBtn();
-
-  soundBtn.onclick = () => {
-    soundEnabled = !soundEnabled;
-    localStorage.setItem("sound", soundEnabled ? "on" : "off");
-
-    if (soundEnabled) {
-      bell.play().catch(()=>{}); // unlock audio
-    }
-
-    updateSoundBtn();
+</body>
+</html>
