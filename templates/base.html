@@ -22,6 +22,11 @@
           <a class="navlink" href="/dashboard">Dashboard</a>
           <a class="navlink" href="/orders">Orders</a>
           <a class="navlink" href="/profile">Profile</a>
+
+          <!-- Phase 1 UX controls -->
+          <button id="themeToggle" class="navbtn" type="button" title="Switch theme">Theme</button>
+          <button id="soundToggle" class="navbtn" type="button" title="Toggle notification sound">Sound: Off</button>
+
           <a class="navlink" href="/logout">Logout</a>
         {% else %}
           <a class="navlink" href="/login">Login</a>
@@ -56,6 +61,10 @@
         const sound = document.getElementById('agroNotifySound');
         const keyLast = 'agro_last_notif_id';
         const keySound = 'agro_sound_enabled';
+        const keyTheme = 'agro_theme';
+
+        const btnTheme = document.getElementById('themeToggle');
+        const btnSound = document.getElementById('soundToggle');
 
         function getLast(){
           const v = localStorage.getItem(keyLast);
@@ -65,8 +74,32 @@
         function setLast(id){ localStorage.setItem(keyLast, String(id||0)); }
         function soundEnabled(){
           const v = localStorage.getItem(keySound);
+          // default ON, but user can switch OFF
           return v === null ? true : (v === 'true');
         }
+
+        function getTheme(){
+          const v = localStorage.getItem(keyTheme);
+          return v || 'bright';
+        }
+        function setTheme(t){
+          localStorage.setItem(keyTheme, t);
+          document.documentElement.dataset.theme = t;
+          updateButtons();
+        }
+
+        function updateButtons(){
+          if (btnTheme){
+            const t = getTheme();
+            btnTheme.textContent = (t === 'dark') ? 'Theme: Dark' : 'Theme: Bright';
+          }
+          if (btnSound){
+            btnSound.textContent = soundEnabled() ? '🔔 Sound: On' : '🔕 Sound: Off';
+          }
+        }
+
+        // Apply theme as early as possible
+        document.documentElement.dataset.theme = getTheme();
 
         function showToast(message, link){
           toast.innerHTML = '';
@@ -99,6 +132,19 @@
           setTimeout(()=>{ toast.style.display='none'; }, 6000);
         }
 
+        async function unlockSound(){
+          // Browsers often block audio until the user interacts.
+          // A click on our toggle counts as a gesture; we use it to “unlock” playback.
+          try {
+            sound.currentTime = 0;
+            await sound.play();
+            sound.pause();
+            sound.currentTime = 0;
+          } catch (e) {
+            // If it's still blocked, we keep silent. User can try again.
+          }
+        }
+
         async function poll(){
           try {
             const since = getLast();
@@ -111,7 +157,9 @@
             if (data && data.items && data.items.length){
               const first = data.items[0];
               if (soundEnabled()){
-                try { await sound.play(); } catch(e) { /* browser may block until user interacts */ }
+                try { sound.currentTime = 0; await sound.play(); } catch(e) {
+                  // browser may block until user interacts
+                }
               }
               showToast(first.message, first.link);
             }
@@ -124,13 +172,36 @@
         setTimeout(poll, 1500);
         setInterval(poll, 10000);
 
+        // Wire up buttons (if user is logged in)
+        if (btnTheme){
+          btnTheme.addEventListener('click', ()=>{
+            setTheme(getTheme() === 'dark' ? 'bright' : 'dark');
+          });
+        }
+        if (btnSound){
+          btnSound.addEventListener('click', async ()=>{
+            const next = !soundEnabled();
+            localStorage.setItem(keySound, String(next));
+            updateButtons();
+            if (next){
+              await unlockSound();
+              showToast('Sound enabled. You will hear a “market bell” on new updates.', '');
+            } else {
+              showToast('Sound disabled.', '');
+            }
+          });
+        }
+
         // Optional: quick toggle via keyboard (Shift+N)
         document.addEventListener('keydown', (e)=>{
           if (e.shiftKey && (e.key === 'N' || e.key === 'n')){
             localStorage.setItem(keySound, String(!soundEnabled()));
+            updateButtons();
             showToast('Notification sound: ' + (soundEnabled() ? 'ON' : 'OFF'), '');
           }
         });
+
+        updateButtons();
       })();
     </script>
   {% endif %}
