@@ -48,7 +48,7 @@ def send_sms_termii(phone: str, message: str) -> bool:
         print("Termii exception:", e)
         return False
 
-from flask import Flask, g, redirect, render_template, request, session, url_for, flash, jsonify
+from flask import Flask, g, redirect, render_template, request, session, url_for, flash, jsonify, send_from_directory
 
 APP_TITLE = "AgroMath MVP"
 
@@ -65,6 +65,14 @@ ADMIN_PHONE = os.environ.get("AGROMATH_ADMIN_PHONE", "09066454125")
 # OTP settings (demo: displayed on screen)
 OTP_TTL_MINUTES = 10
 
+# OneSignal (Web Push)
+# - ONESIGNAL_APP_ID: public app id used by the browser SDK
+# - ONESIGNAL_API_KEY: private REST API key used by backend to send push
+ONESIGNAL_APP_ID = (os.environ.get('ONESIGNAL_APP_ID') or '13a639f4-43c6-4b05-903c-6088acfba15').strip()
+ONESIGNAL_API_KEY = (os.environ.get('ONESIGNAL_API_KEY') or '').strip()
+ONESIGNAL_API_URL = (os.environ.get('ONESIGNAL_API_URL') or 'https://api.onesignal.com/notifications?c=push').strip()
+ONESIGNAL_CAN_SEND = bool(ONESIGNAL_APP_ID and ONESIGNAL_API_KEY)
+
 app = Flask(__name__)
 # IMPORTANT: On Render set a stable SECRET_KEY env var (do not rely on dev default)
 app.secret_key = os.environ.get("SECRET_KEY") or "dev-CHANGE-ME"
@@ -77,6 +85,18 @@ app.secret_key = os.environ.get("SECRET_KEY") or "dev-CHANGE-ME"
 def now_str() -> str:
     # Keep same format so your string comparisons still work
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def row_get(row, key, default=None):
+    """Safe getter for both sqlite3.Row and dict-like rows."""
+    if row is None:
+        return default
+    if isinstance(row, dict):
+        return row.get(key, default)
+    try:
+        return row[key]
+    except Exception:
+        return default
 
 def _ph() -> str:
     """Return the placeholder token for the active DB driver."""
@@ -355,7 +375,21 @@ ensure_schema()
 
 
 # -----------------------------
+# Static: OneSignal service workers (must be at site root for correct scope)
+# -----------------------------
+
+@app.get("/OneSignalSDKWorker.js")
+def onesignal_worker():
+    return send_from_directory(app.static_folder, "OneSignalSDKWorker.js", mimetype="application/javascript")
+
+@app.get("/OneSignalSDKUpdaterWorker.js")
+def onesignal_updater_worker():
+    return send_from_directory(app.static_folder, "OneSignalSDKUpdaterWorker.js", mimetype="application/javascript")
+
+
+# -----------------------------
 # Auth helpers
+
 # -----------------------------
 
 def current_user():
@@ -363,6 +397,17 @@ def current_user():
     if not uid:
         return None
     return db_fetchone(f"SELECT * FROM users WHERE id = {_ph()}", (uid,))
+
+
+@app.context_processor
+def inject_globals():
+    """Make current user + OneSignal config available in every template."""
+    u = current_user()
+    return {
+        'cu': u,
+        'onesignal_app_id': ONESIGNAL_APP_ID,
+        'onesignal_can_send': ONESIGNAL_CAN_SEND,
+    }
 
 def login_required(fn):
     @wraps(fn)
@@ -395,14 +440,56 @@ def role_required(*roles):
 # Notifications (Phase 1: polling + sound)
 # -----------------------------
 
-def notify_user(user_id: int, kind: str, message: str, link: str = "/orders") -> None:
-    """Create an in-app notification for a specific user."""
-    if not user_id:
+def onesignal_push_to_external_ids(external_ids: list[str], heading: str, message: str, web_url: str = "") -> None:
+    """Send a transactional Web Push via OneSignal, if server credentials are present."""
+    if not ONESIGNAL_CAN_SEND:
         return
+    if not external_ids:
+        return
+
+    payload = {
+        'app_id': ONESIGNAL_APP_ID,
+        'target_channel': 'push',
+        'include_aliases': {'external_id': [str(x) for x in external_ids]},
+        'headings': {'en': heading},
+        'contents': {'en': message},
+    }
+    if web_url:
+        payload['web_url'] = web_url
+
+    try:
+        r = requests.post(
+            ONESIGNAL_API_URL,
+            json=payload,
+            headers={
+                'Authorization': f'Key {ONESIGNAL_API_KEY}',
+                'Content-Type': 'application/json',
+            },
+            timeout=20,
+        )
+        if r.status_code >= 400:
+            print('OneSignal push error:', r.status_code, r.text)
+    except Exception as e:
+        print('OneSignal push exception:', e)
+
+
+def notify_user(user_id: int, kind: str, message: str, link: str = '/orders') -> None:
+    """Persist an in-app notification and (optionally) send web push."""
     db_execute(
         f"INSERT INTO notifications(user_id, kind, message, link, created_at) VALUES({_ph()}, {_ph()}, {_ph()}, {_ph()}, {_ph()})",
         (user_id, kind, message, link, now_str()),
     )
+    # IMPORTANT: notifications were not being committed previously, so they never showed up.
+    db_commit()
+
+    # Web Push (OneSignal) — target by External ID == our app user_id
+    try:
+        base = request.url_root.rstrip('/')
+        web_url = base + link if link.startswith('/') else link
+    except Exception:
+        web_url = link
+
+    onesignal_push_to_external_ids([str(user_id)], 'AgroMath', message, web_url=web_url)
 
 
 def notify_role(role: str, kind: str, message: str, link: str = "/orders") -> None:
@@ -519,6 +606,8 @@ def api_notifications():
     This is deliberately simple (Phase 1) and works without websockets/push.
     """
     u = current_user()
+    if not u:
+        return jsonify({"latest_id": 0, "items": []}), 401
     since_raw = request.args.get("since", "0")
     try:
         since = int(since_raw)
@@ -534,7 +623,7 @@ def api_notifications():
             "id": int(r["id"]),
             "kind": r["kind"],
             "message": r["message"],
-            "link": r.get("link") or "",
+            "link": (row_get(r, "link") or ""),
             "created_at": r["created_at"],
         }
         for r in rows
@@ -1155,20 +1244,6 @@ def transport_deliver():
 
 
 
-# --- OneSignal Web Push service worker endpoints (must be served from site root) ---
-# Place these files inside /static:
-#   static/OneSignalSDKWorker.js
-#   static/OneSignalSDKUpdaterWorker.js
-# OneSignal requires them to be accessible at:
-#   https://YOUR_DOMAIN/OneSignalSDKWorker.js
-#   https://YOUR_DOMAIN/OneSignalSDKUpdaterWorker.js
-@app.get("/OneSignalSDKWorker.js")
-def onesignal_sdk_worker():
-    return send_from_directory("static", "OneSignalSDKWorker.js")
-
-@app.get("/OneSignalSDKUpdaterWorker.js")
-def onesignal_sdk_updater_worker():
-    return send_from_directory("static", "OneSignalSDKUpdaterWorker.js")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))

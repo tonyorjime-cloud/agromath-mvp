@@ -5,29 +5,62 @@
   <title>AgroMath MVP</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
 
-  <!-- OneSignal SDK -->
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+
+  <!-- Runtime globals for JS (safe defaults when logged out) -->
+  <script>
+    window.AGROMATH = window.AGROMATH || {};
+    window.AGROMATH.uid = "{{ cu['id'] if cu else '' }}";
+    window.AGROMATH.role = "{{ cu['role'] if cu else '' }}";
+    window.AGROMATH.onesignalAppId = "{{ onesignal_app_id }}";
+  </script>
+
+  <!-- OneSignal SDK (Web Push) -->
   <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
   <script>
     window.OneSignalDeferred = window.OneSignalDeferred || [];
     OneSignalDeferred.push(async function (OneSignal) {
-      await OneSignal.init({
-        appId: "13a639f4-43c6-4b05-903c-6088acfba15",
+      try {
+        await OneSignal.init({
+          appId: window.AGROMATH.onesignalAppId,
 
-        notifyButton: {
-          enable: true   // MUST be true so users can subscribe
-        },
+          notifyButton: {
+            enable: true
+          },
 
-        // IMPORTANT: tell OneSignal where your workers are
-        serviceWorkerPath: "/OneSignalSDKWorker.js",
-        serviceWorkerUpdaterPath: "/OneSignalSDKUpdaterWorker.js",
+          // Service workers must be at the site root for correct scope
+          serviceWorkerPath: "/OneSignalSDKWorker.js",
+          serviceWorkerUpdaterPath: "/OneSignalSDKUpdaterWorker.js",
 
-        allowLocalhostAsSecureOrigin: true
-      });
+          allowLocalhostAsSecureOrigin: true
+        });
+
+        // Link the browser subscription to the logged-in app user.
+        if (window.AGROMATH.uid) {
+          await OneSignal.login(String(window.AGROMATH.uid));
+          if (window.AGROMATH.role) {
+            try { await OneSignal.User.addTag("role", String(window.AGROMATH.role)); } catch (e) {}
+          }
+
+          // Prompt for permission once per browser (so you actually get notifications "now").
+          try {
+            const k = "agromath_push_prompted_v1";
+            if (!localStorage.getItem(k)) {
+              localStorage.setItem(k, "1");
+              if (OneSignal.Slidedown && OneSignal.Slidedown.promptPush) {
+                OneSignal.Slidedown.promptPush();
+              }
+            }
+          } catch (e) {}
+        }
+      } catch (e) {
+        console.warn("OneSignal init error:", e);
+      }
     });
   </script>
 
-  <!-- App styles -->
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <!-- App notification polling (in-app toasts + sound) -->
+  <script src="{{ url_for('static', filename='notify.js') }}" defer></script>
 </head>
 
 <body>
@@ -49,7 +82,7 @@
           <a class="navlink" href="/dashboard">Dashboard</a>
           <a class="navlink" href="/orders">Orders</a>
           <a class="navlink" href="/profile">Profile</a>
-          <a class="navlink" href="/logout">Logout</a>
+          <a class="navlink" href="/logout" id="logoutLink">Logout</a>
         {% else %}
           <a class="navlink" href="/login">Login</a>
         {% endif %}
@@ -64,7 +97,15 @@
       {% if messages %}
         <div class="flashwrap">
           {% for cat, msg in messages %}
-            <div class="flash {{ cat }}">{{ msg }}</div>
+            {% if cat in ['ok','success'] %}
+              <div class="toast ok">{{ msg }}</div>
+            {% elif cat in ['warn','warning'] %}
+              <div class="toast warn">{{ msg }}</div>
+            {% elif cat in ['error','danger'] %}
+              <div class="toast danger">{{ msg }}</div>
+            {% else %}
+              <div class="toast">{{ msg }}</div>
+            {% endif %}
           {% endfor %}
         </div>
       {% endif %}
@@ -76,12 +117,36 @@
     {% block content %}{% endblock %}
   </div>
 
+  <!-- In-app notification area (toasts injected by notify.js) -->
+  <div id="notifbox" class="notifbox" aria-live="polite" aria-atomic="true"></div>
+
   <!-- Footer -->
   <div class="footer">
     <div class="container muted small">
       MVP · Testing only · No payments · No escrow (yet)
     </div>
   </div>
+
+  <script>
+    // Best-effort: unlink OneSignal user on logout.
+    (function(){
+      var link = document.getElementById('logoutLink');
+      if (!link) return;
+      link.addEventListener('click', function(e){
+        try {
+          if (!window.AGROMATH || !window.AGROMATH.uid) return; // nothing to unlink
+          if (!window.OneSignalDeferred) return;
+          e.preventDefault();
+          window.OneSignalDeferred.push(async function(OneSignal){
+            try { await OneSignal.logout(); } catch (err) {}
+            window.location.href = '/logout';
+          });
+        } catch (err) {
+          // If anything goes sideways, just logout normally.
+        }
+      });
+    })();
+  </script>
 
 </body>
 </html>

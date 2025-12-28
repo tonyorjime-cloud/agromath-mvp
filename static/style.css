@@ -209,3 +209,15 @@ input:focus, select:focus{border-color: rgba(91,140,255,.65)}
 .badge.pending{border-color: rgba(255,204,102,.55); color: rgba(255,204,102,.95)}
 
 .footer{margin-top:22px;text-align:center}
+
+/* In-app live notification toasts */
+.flashwrap{margin-top:12px}
+.notifbox{
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  width: min(380px, 92vw);
+  z-index: 9999;
+  pointer-events: none;
+}
+.notifbox .toast{pointer-events:auto; box-shadow: 0 18px 60px rgba(0,0,0,.35)}
