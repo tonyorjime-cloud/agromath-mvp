@@ -4,8 +4,26 @@
   <meta charset="utf-8">
   <title>AgroMath MVP</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <!-- OneSignal SDK -->
+  <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
+  <script>
+    window.OneSignalDeferred = window.OneSignalDeferred || [];
+    OneSignalDeferred.push(async function(OneSignal) {
+      await OneSignal.init({
+        appId: 1aa639f4-43c6-4b05-903c-6088acfbab15,
+        notifyButton: {
+          enable: false
+        },
+        allowLocalhostAsSecureOrigin: true
+      });
+    });
+  </script>
+
+  <!-- App styles -->
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
+
 <body>
   <div class="topbar">
     <div class="container row space">
