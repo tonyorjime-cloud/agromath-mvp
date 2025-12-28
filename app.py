@@ -442,7 +442,7 @@ def login_post():
 
     flash("Demo mode: OTP is displayed on-screen.")
     return render_template("login.html", phone=phone, demo_otp=otp, sms_enabled=False)
-ow:
+else:
         flash("No OTP found. Please request again.", "error")
         return redirect(url_for("login"))
 
