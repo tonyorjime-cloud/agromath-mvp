@@ -1,4 +1,4 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -9,12 +9,18 @@
   <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
   <script>
     window.OneSignalDeferred = window.OneSignalDeferred || [];
-    OneSignalDeferred.push(async function(OneSignal) {
+    OneSignalDeferred.push(async function (OneSignal) {
       await OneSignal.init({
-        appId: 1aa639f4-43c6-4b05-903c-6088acfbab15,
+        appId: "13a639f4-43c6-4b05-903c-6088acfba15",
+
         notifyButton: {
-          enable: false
+          enable: true   // MUST be true so users can subscribe
         },
+
+        // IMPORTANT: tell OneSignal where your workers are
+        serviceWorkerPath: "/OneSignalSDKWorker.js",
+        serviceWorkerUpdaterPath: "/OneSignalSDKUpdaterWorker.js",
+
         allowLocalhostAsSecureOrigin: true
       });
     });
@@ -25,18 +31,21 @@
 </head>
 
 <body>
+
+  <!-- Top bar -->
   <div class="topbar">
     <div class="container row space">
+
       <div class="brand">
-        <div class="logo">A</div>
+        <div class="logo">Ag</div>
         <div>
           <div class="brandname">AgroMath</div>
-          <div class="tag">Farm → City logistics, MVP</div>
+          <div class="tag">Farm ↔ City Logistics · MVP</div>
         </div>
       </div>
 
       <div class="nav">
-        {% if session.get("uid") %}
+        {% if session.get('uid') %}
           <a class="navlink" href="/dashboard">Dashboard</a>
           <a class="navlink" href="/orders">Orders</a>
           <a class="navlink" href="/profile">Profile</a>
@@ -45,9 +54,11 @@
           <a class="navlink" href="/login">Login</a>
         {% endif %}
       </div>
+
     </div>
   </div>
 
+  <!-- Flash messages -->
   <div class="container">
     {% with messages = get_flashed_messages(with_categories=true) %}
       {% if messages %}
@@ -58,14 +69,19 @@
         </div>
       {% endif %}
     {% endwith %}
+  </div>
 
+  <!-- Main content -->
+  <div class="container">
     {% block content %}{% endblock %}
   </div>
 
+  <!-- Footer -->
   <div class="footer">
     <div class="container muted small">
-      Built for testing. No payments, no SMS, no escrow (yet).
+      MVP · Testing only · No payments · No escrow (yet)
     </div>
   </div>
+
 </body>
 </html>
