@@ -140,5 +140,126 @@
       Built for testing. No payments, no SMS, no escrow (yet).
     </div>
   </div>
+<audio id="notifAudio" preload="auto"><source src="/static/cowbell.wav" type="audio/wav"></audio>
+<script>
+(function(){
+  const audioEl = document.getElementById("notifAudio");
+  const soundBtn = document.getElementById("soundBtn");
+  const notifBtn = document.getElementById("notifBtn");
+
+  // Sound enable: browsers require a user gesture before audio playback works.
+  function setSoundEnabled(v){
+    localStorage.setItem("agro_sound", v ? "1" : "0");
+    if(soundBtn){
+      soundBtn.textContent = v ? "🔔" : "🔈";
+      soundBtn.title = v ? "Sound: on" : "Sound: off";
+    }
+  }
+  function isSoundEnabled(){ return localStorage.getItem("agro_sound") === "1"; }
+
+  async function unlockAudio(){
+    if(!audioEl) return;
+    try{
+      audioEl.volume = 0.6;
+      // play+pause quickly to satisfy gesture requirement
+      await audioEl.play();
+      audioEl.pause();
+      audioEl.currentTime = 0;
+      return true;
+    }catch(e){
+      return false;
+    }
+  }
+
+  async function beep(){
+    if(!audioEl || !isSoundEnabled()) return;
+    try{
+      audioEl.currentTime = 0;
+      await audioEl.play();
+    }catch(e){
+      // Autoplay blocked; disable sound until user re-enables
+      setSoundEnabled(false);
+    }
+  }
+
+  // Web Notifications (in-browser). Optional.
+  async function ensureNotificationPermission(){
+    if(!("Notification" in window)) return false;
+    if(Notification.permission === "granted") return true;
+    if(Notification.permission === "denied") return false;
+    const p = await Notification.requestPermission();
+    return p === "granted";
+  }
+
+  function showToast(msg){
+    // lightweight toast
+    const t = document.createElement("div");
+    t.className = "toast";
+    t.textContent = msg;
+    document.body.appendChild(t);
+    setTimeout(()=>t.classList.add("show"), 20);
+    setTimeout(()=>{ t.classList.remove("show"); setTimeout(()=>t.remove(), 300); }, 3500);
+  }
+
+  function showDesktopNotification(title, body){
+    if(!("Notification" in window)) return;
+    if(Notification.permission !== "granted") return;
+    try{ new Notification(title, { body }); }catch(e){}
+  }
+
+  if(soundBtn){
+    // initialize
+    setSoundEnabled(isSoundEnabled());
+    soundBtn.addEventListener("click", async ()=>{
+      const next = !isSoundEnabled();
+      if(next){
+        const ok = await unlockAudio();
+        if(!ok){
+          showToast("Tap again to enable sound (browser is blocking audio).");
+          return;
+        }
+      }
+      setSoundEnabled(next);
+      showToast(next ? "Sound enabled" : "Sound disabled");
+    });
+  }
+
+  if(notifBtn){
+    notifBtn.addEventListener("click", async ()=>{
+      const ok = await ensureNotificationPermission();
+      showToast(ok ? "Browser notifications enabled" : "Browser notifications not enabled");
+    });
+  }
+
+  let since = Number(localStorage.getItem("agro_notif_since") || "0");
+
+  async function pollNotifications(){
+    try{
+      const r = await fetch(`/api/notifications?since=${since}`, { cache: "no-store" });
+      if(!r.ok) return;
+      const data = await r.json();
+      if(!data || !data.items) return;
+      if(data.items.length){
+        // update since to last id
+        since = data.items[data.items.length-1].id;
+        localStorage.setItem("agro_notif_since", String(since));
+
+        // play sound once per batch
+        await beep();
+
+        // show toast + desktop
+        const last = data.items[data.items.length-1];
+        showToast(last.message || "New update");
+        showDesktopNotification("AgroMath", last.message || "New update");
+      }
+    }catch(e){
+      // ignore
+    }
+  }
+
+  // Poll every 8 seconds (lightweight)
+  setInterval(pollNotifications, 8000);
+})();
+</script>
 </body>
 </html>
