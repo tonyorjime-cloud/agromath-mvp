@@ -1152,15 +1152,23 @@ def transport_deliver():
 
     flash("Order marked delivered.", "ok")
     return redirect(url_for("transporter_dashboard"))
-from flask import send_from_directory
 
-@app.route('/OneSignalSDKWorker.js')
-def onesignal_worker():
-    return send_from_directory('static', 'OneSignalSDKWorker.js')
 
-@app.route('/OneSignalSDKUpdaterWorker.js')
-def onesignal_updater():
-    return send_from_directory('static', 'OneSignalSDKUpdaterWorker.js')
+
+# --- OneSignal Web Push service worker endpoints (must be served from site root) ---
+# Place these files inside /static:
+#   static/OneSignalSDKWorker.js
+#   static/OneSignalSDKUpdaterWorker.js
+# OneSignal requires them to be accessible at:
+#   https://YOUR_DOMAIN/OneSignalSDKWorker.js
+#   https://YOUR_DOMAIN/OneSignalSDKUpdaterWorker.js
+@app.get("/OneSignalSDKWorker.js")
+def onesignal_sdk_worker():
+    return send_from_directory("static", "OneSignalSDKWorker.js")
+
+@app.get("/OneSignalSDKUpdaterWorker.js")
+def onesignal_sdk_updater_worker():
+    return send_from_directory("static", "OneSignalSDKUpdaterWorker.js")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
