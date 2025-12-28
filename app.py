@@ -10,45 +10,9 @@ from typing import Any, Dict, Optional
 import psycopg2
 import psycopg2.extras
 
-import os, random
 import requests
 
-def send_sms_termii(phone: str, message: str) -> bool:
-    api_key = os.environ.get("TERMII_API_KEY")
-    sender_id = os.environ.get("TERMII_SENDER_ID", "AgroMath")
-
-    if not api_key:
-        print("TERMII_API_KEY missing")
-        return False
-
-    # Termii generally expects international format, e.g. +2349066454125
-    # If your app stores local numbers, you can normalize here:
-    if phone.startswith("0"):
-        phone = "+234" + phone[1:]
-    elif phone.startswith("234"):
-        phone = "+" + phone
-
-    url = "https://api.ng.termii.com/api/sms/send"
-    payload = {
-        "to": phone,
-        "from": sender_id,
-        "sms": message,
-        "type": "plain",
-        "channel": "generic",
-        "api_key": api_key
-    }
-
-    try:
-        r = requests.post(url, json=payload, timeout=20)
-        if r.status_code >= 400:
-            print("Termii error:", r.status_code, r.text)
-            return False
-        return True
-    except Exception as e:
-        print("Termii exception:", e)
-        return False
-
-from flask import Flask, g, redirect, render_template, request, session, url_for, flash, jsonify
+from flask import Flask, g, redirect, render_template, request, session, url_for, flash
 
 APP_TITLE = "AgroMath MVP"
 
@@ -68,6 +32,60 @@ OTP_TTL_MINUTES = 10
 app = Flask(__name__)
 # IMPORTANT: On Render set a stable SECRET_KEY env var (do not rely on dev default)
 app.secret_key = os.environ.get("SECRET_KEY") or "dev-CHANGE-ME"
+
+# -----------------------------
+# SMS (Termii) - OTP delivery
+# -----------------------------
+TERMII_API_KEY = os.environ.get("TERMII_API_KEY", "").strip()
+TERMII_SENDER_ID = os.environ.get("TERMII_SENDER_ID", "AgroMath").strip()  # must be approved by Termii
+TERMII_CHANNEL = os.environ.get("TERMII_CHANNEL", "dnd").strip()          # common: dnd / generic / whatsapp
+TERMII_BASE_URL = os.environ.get("TERMII_BASE_URL", "https://api.ng.termii.com").strip()
+
+def termii_enabled() -> bool:
+    return bool(TERMII_API_KEY)
+
+def normalize_phone_ng(phone: str) -> str:
+    """Normalize Nigerian MSISDN to international format without '+'.
+    Examples:
+      09066454125 -> 2349066454125
+      +2349066454125 -> 2349066454125
+      2349066454125 -> 2349066454125
+    """
+    p = (phone or "").strip().replace(" ", "").replace("-", "")
+    if p.startswith("+"):
+        p = p[1:]
+    if p.startswith("0") and len(p) == 11:
+        return "234" + p[1:]
+    return p
+
+def send_termii_sms(to_phone: str, message: str) -> tuple[bool, str]:
+    """Send a plain SMS via Termii.
+    Returns (ok, detail). Detail is safe for logs/flash.
+    """
+    if not termii_enabled():
+        return False, "TERMII_API_KEY not set"
+    to_norm = normalize_phone_ng(to_phone)
+    url = f"{TERMII_BASE_URL.rstrip('/')}/api/sms/send"
+    payload = {
+        "to": to_norm,
+        "from": TERMII_SENDER_ID,
+        "sms": message,
+        "type": "plain",
+        "channel": TERMII_CHANNEL,
+        "api_key": TERMII_API_KEY,
+    }
+    try:
+        r = requests.post(url, json=payload, timeout=20)
+        if r.status_code >= 200 and r.status_code < 300:
+            return True, "sent"
+        # Do not leak API key; include a small response snippet for debugging
+        return False, f"HTTP {r.status_code}: {r.text[:200]}"
+    except Exception as e:
+        return False, f"error: {e}"
+
+def otp_sms_message(otp: str) -> str:
+    return f"{APP_TITLE} OTP: {otp}. Expires in 10 minutes."
+
 
 
 # -----------------------------
@@ -227,18 +245,6 @@ def ensure_schema_sqlite() -> None:
         )
     """)
 
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS notifications(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            kind TEXT NOT NULL,
-            message TEXT NOT NULL,
-            link TEXT,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY(user_id) REFERENCES users(id)
-        )
-    """)
-
     # Lightweight migrations for older dbs
     tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
     if "users" in tables:
@@ -330,17 +336,6 @@ def ensure_schema_postgres() -> None:
                 );
             """)
 
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS notifications(
-                    id SERIAL PRIMARY KEY,
-                    user_id INTEGER NOT NULL REFERENCES users(id),
-                    kind TEXT NOT NULL,
-                    message TEXT NOT NULL,
-                    link TEXT,
-                    created_at TEXT NOT NULL
-                );
-            """)
-
         conn.commit()
     finally:
         conn.close()
@@ -392,30 +387,6 @@ def role_required(*roles):
 
 
 # -----------------------------
-# Notifications (Phase 1: polling + sound)
-# -----------------------------
-
-def notify_user(user_id: int, kind: str, message: str, link: str = "/orders") -> None:
-    """Create an in-app notification for a specific user."""
-    if not user_id:
-        return
-    db_execute(
-        f"INSERT INTO notifications(user_id, kind, message, link, created_at) VALUES({_ph()}, {_ph()}, {_ph()}, {_ph()}, {_ph()})",
-        (user_id, kind, message, link, now_str()),
-    )
-
-
-def notify_role(role: str, kind: str, message: str, link: str = "/orders") -> None:
-    """Notify all active users in a role (used for transporters on new orders)."""
-    rows = db_fetchall(
-        f"SELECT id FROM users WHERE role = {_ph()} AND is_active = 1",
-        (role,),
-    )
-    for r in rows:
-        notify_user(int(r["id"]), kind, message, link)
-
-
-# -----------------------------
 # UI helpers
 # -----------------------------
 
@@ -441,7 +412,7 @@ def index():
 
 @app.get("/login")
 def login():
-    return render_template("login.html")
+    return render_template("login.html", sms_enabled=termii_enabled())
 
 @app.post("/login")
 def login_post():
@@ -458,32 +429,20 @@ def login_post():
         )
         db_commit()
 
-    otp = str(secrets.randbelow(900000) + 100000)  # 6-digit
-    expires = (datetime.now() + timedelta(minutes=OTP_TTL_MINUTES)).strftime("%Y-%m-%d %H:%M:%S")
-    db_execute(
-        f"INSERT INTO otps(phone, otp, expires_at, created_at) VALUES({_ph()}, {_ph()}, {_ph()}, {_ph()})",
-        (phone, otp, expires, now_str()),
-    )
-    db_commit()
-
     session["pending_phone"] = phone
-    return render_template("login.html", demo_otp=otp, phone=phone)
 
-@app.post("/verify")
-def verify():
-    phone = (session.get("pending_phone") or "").strip()
-    otp = (request.form.get("otp") or "").strip()
+    if termii_enabled():
+        ok, detail = send_termii_sms(phone, otp_sms_message(otp))
+        if ok:
+            flash("OTP sent to your phone via SMS.")
+            return render_template("login.html", phone=phone, demo_otp=None, sms_enabled=True)
+        else:
+            flash("Could not send SMS OTP right now. Showing OTP on-screen for testing.")
+            return render_template("login.html", phone=phone, demo_otp=otp, sms_enabled=False)
 
-    if not phone:
-        flash("Please request an OTP first.", "error")
-        return redirect(url_for("login"))
-
-    row = db_fetchone(
-        f"SELECT * FROM otps WHERE phone = {_ph()} ORDER BY id DESC LIMIT 1",
-        (phone,),
-    )
-
-    if not row:
+    flash("Demo mode: OTP is displayed on-screen.")
+    return render_template("login.html", phone=phone, demo_otp=otp, sms_enabled=False)
+ow:
         flash("No OTP found. Please request again.", "error")
         return redirect(url_for("login"))
 
@@ -508,40 +467,6 @@ def verify():
 def logout():
     session.clear()
     return redirect(url_for("login"))
-
-
-@app.get("/api/notifications")
-@login_required
-def api_notifications():
-    """Return new notifications for the logged-in user.
-
-    The client passes `since=<last_seen_id>`; we respond with notifications where id > since.
-    This is deliberately simple (Phase 1) and works without websockets/push.
-    """
-    u = current_user()
-    since_raw = request.args.get("since", "0")
-    try:
-        since = int(since_raw)
-    except Exception:
-        since = 0
-
-    rows = db_fetchall(
-        f"SELECT id, kind, message, link, created_at FROM notifications WHERE user_id = {_ph()} AND id > {_ph()} ORDER BY id ASC LIMIT 25",
-        (u["id"], since),
-    )
-    items = [
-        {
-            "id": int(r["id"]),
-            "kind": r["kind"],
-            "message": r["message"],
-            "link": r.get("link") or "",
-            "created_at": r["created_at"],
-        }
-        for r in rows
-    ]
-
-    latest_id = items[-1]["id"] if items else since
-    return jsonify({"latest_id": latest_id, "items": items})
 
 
 # -----------------------------
@@ -808,17 +733,6 @@ def order_place():
         )
 
     db_commit()
-
-    # Phase-1 in-app notifications
-    # Notify all active transporters that a new order needs quotes
-    for tr in db_fetchall("SELECT id FROM users WHERE role='transporter' AND is_active=1"):
-        notify_user(tr["id"], "NEW_ORDER", f"New order {oid} needs transport quotes.")
-
-    # Notify any farmers whose products are in the order
-    farmer_ids = sorted({by_id.get(str(pid), {}).get("farmer_user_id") for pid in cart.keys() if by_id.get(str(pid))})
-    for fid in [x for x in farmer_ids if x]:
-        notify_user(int(fid), "NEW_ORDER", f"New order {oid} includes your products.")
-
     set_cart({})
     flash(f"Order {oid} placed. Waiting for transporter quotes.", "ok")
     return redirect(url_for("orders"))
@@ -871,8 +785,7 @@ def orders():
             ORDER BY q.created_at DESC
         """, (o["id"],))
 
-        # NOTE: avoid using key name "items" because Jinja treats `pack.items` as dict.items() (a method).
-        out.append({"order": o, "line_items": items, "quotes": quotes})
+        out.append({"order": o, "items": items, "quotes": quotes})
 
     return render_template("orders.html", user=u, orders=out)
 
@@ -913,16 +826,6 @@ def quote_accept():
     )
     db_commit()
 
-    # Notifications
-    notify_user(int(q["transporter_user_id"]), "QUOTE_ACCEPTED", f"Your quote was accepted for order {order_id}.")
-
-    declined = db_fetchall(
-        f"SELECT transporter_user_id FROM quotes WHERE order_id={_ph()} AND id<>{_ph()}",
-        (order_id, quote_id),
-    )
-    for d in declined:
-        notify_user(int(d["transporter_user_id"]), "QUOTE_DECLINED", f"Another quote was accepted for order {order_id}.")
-
     flash("Quote accepted. Transporter can now deliver.", "ok")
     return redirect(url_for("orders"))
 
@@ -949,10 +852,6 @@ def quote_decline():
         (quote_id, order_id),
     )
     db_commit()
-
-    q = db_fetchone(f"SELECT transporter_user_id FROM quotes WHERE id={_ph()}", (quote_id,))
-    if q:
-        notify_user(int(q["transporter_user_id"]), "QUOTE_DECLINED", f"Buyer declined your quote for order {order_id}.")
     flash("Quote declined.", "ok")
     return redirect(url_for("orders"))
 
@@ -1101,12 +1000,6 @@ def transport_quote():
         (order_id, u["id"], price, eta_hours, now_str()),
     )
     db_commit()
-
-    # Notify buyer: quote arrived
-    buyer = db_fetchone(f"SELECT buyer_user_id FROM orders WHERE id={_ph()}", (order_id,))
-    if buyer:
-        notify_user(int(buyer["buyer_user_id"]), "QUOTE", f"New transport quote received for order {order_id}.")
-
     flash("Quote submitted.", "ok")
     return redirect(url_for("transporter_dashboard"))
 
@@ -1139,17 +1032,6 @@ def transport_deliver():
     db_execute(f"UPDATE orders SET status='DELIVERED' WHERE id={_ph()}", (order_id,))
     db_commit()
 
-    # Notifications
-    buyer = db_fetchone(f"SELECT buyer_user_id FROM orders WHERE id={_ph()}", (order_id,))
-    if buyer:
-        notify_user(int(buyer["buyer_user_id"]), "DELIVERED", f"Order {order_id} marked delivered.")
-
-    for fr in db_fetchall(
-        f"SELECT DISTINCT p.farmer_user_id AS uid FROM order_items oi JOIN products p ON p.id=oi.product_id WHERE oi.order_id={_ph()}",
-        (order_id,),
-    ):
-        notify_user(int(fr["uid"]), "DELIVERED", f"Order {order_id} has been delivered.")
-
     flash("Order marked delivered.", "ok")
     return redirect(url_for("transporter_dashboard"))
 
@@ -1157,4 +1039,4 @@ def transport_deliver():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
     debug = os.environ.get("FLASK_DEBUG", "0") == "1"
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=os.getenv("FLASK_DEBUG","0")=="1")
+    app.run(host="0.0.0.0", port=port, debug=debug)
