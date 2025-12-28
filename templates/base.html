@@ -1,46 +1,144 @@
-<!DOCTYPE html>
-<html lang="en" data-theme="light">
+<!doctype html>
+<html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>AgroMath</title>
+  <meta charset="utf-8">
+  <title>AgroMath MVP</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
-
 <body>
-  <header class="topbar">
-    <div class="brand">
-      <span class="logo">🌾</span>
-      <span class="name">AgroMath</span>
-    </div>
+  <div class="topbar">
+    <div class="container row space">
+      <div class="brand">
+        <div class="logo">A</div>
+        <div>
+          <div class="brandname">AgroMath</div>
+          <div class="tag">Farm → City logistics, MVP</div>
+        </div>
+      </div>
 
-    <div class="top-actions">
-      <button id="themeToggle" class="btn btn-toggle">🌙 / ☀️</button>
-      {% if user %}
-        <a href="/profile" class="btn btn-ghost">Profile</a>
-        <a href="/logout" class="btn btn-ghost">Logout</a>
+      <div class="nav">
+        {% if session.get("uid") %}
+          <a class="navlink" href="/dashboard">Dashboard</a>
+          <a class="navlink" href="/orders">Orders</a>
+          <a class="navlink" href="/profile">Profile</a>
+          <a class="navlink" href="/logout">Logout</a>
+        {% else %}
+          <a class="navlink" href="/login">Login</a>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="container">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <div class="flashwrap">
+          {% for cat, msg in messages %}
+            <div class="flash {{ cat }}">{{ msg }}</div>
+          {% endfor %}
+        </div>
       {% endif %}
-    </div>
-  </header>
+    {% endwith %}
 
-  <main class="container">
     {% block content %}{% endblock %}
-  </main>
+  </div>
 
-<script>
-  const root = document.documentElement;
-  const toggle = document.getElementById("themeToggle");
+  <!-- Phase 1 notifications: in-app polling + unique sound -->
+  {% if session.get("uid") %}
+    <div id="agroToast" class="toast" style="display:none"></div>
+    <audio id="agroNotifySound" preload="auto">
+      <source src="{{ url_for('static', filename='notify.wav') }}" type="audio/wav">
+    </audio>
+    <script>
+      (function(){
+        const toast = document.getElementById('agroToast');
+        const sound = document.getElementById('agroNotifySound');
+        const keyLast = 'agro_last_notif_id';
+        const keySound = 'agro_sound_enabled';
 
-  const savedTheme = localStorage.getItem("theme");
-  if (savedTheme) root.setAttribute("data-theme", savedTheme);
+        function getLast(){
+          const v = localStorage.getItem(keyLast);
+          const n = parseInt(v || '0', 10);
+          return isNaN(n) ? 0 : n;
+        }
+        function setLast(id){ localStorage.setItem(keyLast, String(id||0)); }
+        function soundEnabled(){
+          const v = localStorage.getItem(keySound);
+          return v === null ? true : (v === 'true');
+        }
 
-  toggle.onclick = () => {
-    const current = root.getAttribute("data-theme");
-    const next = current === "dark" ? "light" : "dark";
-    root.setAttribute("data-theme", next);
-    localStorage.setItem("theme", next);
-  };
-</script>
+        function showToast(message, link){
+          toast.innerHTML = '';
+          const box = document.createElement('div');
+          box.className = 'toast-inner';
+          const text = document.createElement('div');
+          text.className = 'toast-text';
+          text.textContent = message;
+          box.appendChild(text);
 
+          if (link){
+            const a = document.createElement('a');
+            a.className = 'toast-link';
+            a.href = link;
+            a.textContent = 'Open';
+            box.appendChild(a);
+          }
+
+          const btn = document.createElement('button');
+          btn.className = 'toast-close';
+          btn.type = 'button';
+          btn.textContent = '×';
+          btn.onclick = () => { toast.style.display='none'; };
+          box.appendChild(btn);
+
+          toast.appendChild(box);
+          toast.style.display = 'block';
+
+          // auto-hide
+          setTimeout(()=>{ toast.style.display='none'; }, 6000);
+        }
+
+        async function poll(){
+          try {
+            const since = getLast();
+            const res = await fetch('/api/notifications?since=' + encodeURIComponent(since), {cache:'no-store'});
+            if (!res.ok) return;
+            const data = await res.json();
+            if (data && data.latest_id !== undefined){
+              setLast(data.latest_id);
+            }
+            if (data && data.items && data.items.length){
+              const first = data.items[0];
+              if (soundEnabled()){
+                try { await sound.play(); } catch(e) { /* browser may block until user interacts */ }
+              }
+              showToast(first.message, first.link);
+            }
+          } catch (e) {
+            // silent: polling shouldn't break the UI
+          }
+        }
+
+        // Start polling
+        setTimeout(poll, 1500);
+        setInterval(poll, 10000);
+
+        // Optional: quick toggle via keyboard (Shift+N)
+        document.addEventListener('keydown', (e)=>{
+          if (e.shiftKey && (e.key === 'N' || e.key === 'n')){
+            localStorage.setItem(keySound, String(!soundEnabled()));
+            showToast('Notification sound: ' + (soundEnabled() ? 'ON' : 'OFF'), '');
+          }
+        });
+      })();
+    </script>
+  {% endif %}
+
+  <div class="footer">
+    <div class="container muted small">
+      Built for testing. No payments, no SMS, no escrow (yet).
+    </div>
+  </div>
 </body>
 </html>
