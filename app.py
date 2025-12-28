@@ -10,6 +10,44 @@ from typing import Any, Dict, Optional
 import psycopg2
 import psycopg2.extras
 
+import os, random
+import requests
+
+def send_sms_termii(phone: str, message: str) -> bool:
+    api_key = os.environ.get("TERMII_API_KEY")
+    sender_id = os.environ.get("TERMII_SENDER_ID", "AgroMath")
+
+    if not api_key:
+        print("TERMII_API_KEY missing")
+        return False
+
+    # Termii generally expects international format, e.g. +2349066454125
+    # If your app stores local numbers, you can normalize here:
+    if phone.startswith("0"):
+        phone = "+234" + phone[1:]
+    elif phone.startswith("234"):
+        phone = "+" + phone
+
+    url = "https://api.ng.termii.com/api/sms/send"
+    payload = {
+        "to": phone,
+        "from": sender_id,
+        "sms": message,
+        "type": "plain",
+        "channel": "generic",
+        "api_key": api_key
+    }
+
+    try:
+        r = requests.post(url, json=payload, timeout=20)
+        if r.status_code >= 400:
+            print("Termii error:", r.status_code, r.text)
+            return False
+        return True
+    except Exception as e:
+        print("Termii exception:", e)
+        return False
+
 from flask import Flask, g, redirect, render_template, request, session, url_for, flash, jsonify
 
 APP_TITLE = "AgroMath MVP"
