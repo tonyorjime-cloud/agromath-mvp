@@ -50,85 +50,72 @@
 
   <div class="card">
     <h3>Place Order</h3>
-    <form method="post" action="/order/place" class="stack">
+    <form method="post" action="/order/place" class="stack" id="orderForm">
       <label class="label">Origin (pickup)</label>
       <input id="originText" name="origin" placeholder="e.g., Makurdi Hub" required>
 
-      <div class="row" style="justify-content:space-between;gap:10px;">
-        <button type="button" class="btn btn-ghost" id="btnUseGps">Use my current location</button>
-        <div class="muted small" id="gpsOriginStatus"></div>
+      <div class="row">
+        <button class="btn btn-light" type="button" id="btnOriginGps">Use my current location (pickup)</button>
+        <div class="muted small" id="originGpsStatus"></div>
       </div>
 
       <input type="hidden" name="origin_lat" id="origin_lat">
       <input type="hidden" name="origin_lng" id="origin_lng">
       <input type="hidden" name="origin_accuracy" id="origin_accuracy">
+
       <label class="label">Destination (buyer drop-off)</label>
       <input id="destText" name="dest" placeholder="e.g., Wuse 2, Abuja" required>
 
-      <div class="row" style="justify-content:space-between;gap:10px;">
-        <button type="button" class="btn btn-ghost" id="btnUseGpsDest">Use my current location</button>
-        <div class="muted small" id="gpsDestStatus"></div>
+      <div class="row">
+        <button class="btn btn-light" type="button" id="btnDestGps">Use my current location (destination)</button>
+        <div class="muted small" id="destGpsStatus"></div>
       </div>
 
       <input type="hidden" name="dest_lat" id="dest_lat">
       <input type="hidden" name="dest_lng" id="dest_lng">
       <input type="hidden" name="dest_accuracy" id="dest_accuracy">
+
       <button class="btn btn-primary" type="submit" {% if not items %}disabled{% endif %}>Place Order</button>
     </form>
 
-    <p class="muted small">After placing the order, transporters will submit quotes. You can accept or decline.</p>
+    <p class="muted small">Tip: GPS is optional, but if you capture it, the transporter gets one-tap navigation to your destination.</p>
+
+    <script>
+    (function(){
+      function setStatus(el, msg){ el.textContent = msg || ''; }
+
+      function capture(which){
+        if(!navigator.geolocation){
+          alert('Geolocation not supported on this browser.');
+          return;
+        }
+        const statusEl = document.getElementById(which === 'origin' ? 'originGpsStatus' : 'destGpsStatus');
+        setStatus(statusEl, 'Getting GPS…');
+
+        navigator.geolocation.getCurrentPosition(
+          function(p){
+            const lat = p.coords.latitude;
+            const lng = p.coords.longitude;
+            const acc = p.coords.accuracy;
+
+            document.getElementById(which + '_lat').value = String(lat);
+            document.getElementById(which + '_lng').value = String(lng);
+            document.getElementById(which + '_accuracy').value = String(acc || '');
+
+            setStatus(statusEl, `Captured: ${lat.toFixed(5)}, ${lng.toFixed(5)} (±${Math.round(acc||0)}m)`);
+          },
+          function(err){
+            setStatus(statusEl, 'GPS error: ' + err.message);
+          },
+          {enableHighAccuracy:true, maximumAge:10000, timeout:15000}
+        );
+      }
+
+      document.getElementById('btnOriginGps').addEventListener('click', function(){ capture('origin'); });
+      document.getElementById('btnDestGps').addEventListener('click', function(){ capture('dest'); });
+    })();
+    </script>
   </div>
 </div>
-
-
-<script>
-(function(){
-  function bindGps(btnId, statusId, latId, lngId, accId, textId){
-    const btn = document.getElementById(btnId);
-    const statusEl = document.getElementById(statusId);
-    const latEl = document.getElementById(latId);
-    const lngEl = document.getElementById(lngId);
-    const accEl = document.getElementById(accId);
-    const textEl = document.getElementById(textId);
-
-    if(!btn) return;
-
-    btn.addEventListener('click', function(){
-      if(!navigator.geolocation){
-        statusEl.textContent = 'Geolocation not supported.';
-        return;
-      }
-      statusEl.textContent = 'Requesting permission…';
-      navigator.geolocation.getCurrentPosition(
-        function(p){
-          const lat = p.coords.latitude;
-          const lng = p.coords.longitude;
-          const acc = p.coords.accuracy;
-
-          latEl.value = String(lat);
-          lngEl.value = String(lng);
-          accEl.value = String(acc || '');
-
-          if(textEl && !textEl.value.trim()){
-            textEl.value = 'Current Location';
-          }
-
-          statusEl.textContent = `Captured (±${Math.round(acc||0)}m)`;
-        },
-        function(err){
-          statusEl.textContent = 'Location error: ' + err.message;
-        },
-        {enableHighAccuracy:true, maximumAge:60000, timeout:15000}
-      );
-    });
-  }
-
-  // Origin (pickup)
-  bindGps('btnUseGps', 'gpsOriginStatus', 'origin_lat', 'origin_lng', 'origin_accuracy', 'originText');
-
-  // Destination (drop-off)
-  bindGps('btnUseGpsDest', 'gpsDestStatus', 'dest_lat', 'dest_lng', 'dest_accuracy', 'destText');
-})();
-</script>
 
 {% endblock %}

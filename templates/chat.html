@@ -1,24 +1,26 @@
 {% extends "base.html" %}
 {% block content %}
-
-<div class="row space" style="justify-content:space-between;align-items:center;">
+<div class="row space">
   <div>
     <h2>Order Chat</h2>
-    <div class="muted small">Order {{ order_id }}</div>
+    <div class="muted">Order {{ order_id }} · Participants: buyer, farmer(s), accepted transporter</div>
   </div>
   <div class="pillrow">
-    <a class="btn btn-ghost" href="/orders">Back</a>
+    <a class="btn btn-ghost" href="/orders">Back to Orders</a>
     <a class="btn btn-ghost" href="/track/{{ order_id }}">Track</a>
   </div>
 </div>
 
 <div class="card">
-  <div id="chatBox" style="max-height:55vh; overflow:auto; padding:12px; border:1px solid rgba(255,255,255,.08); border-radius:12px;">
+  <div id="chatBox" class="chatbox" style="max-height:420px; overflow:auto; padding:10px;">
     {% if messages %}
       {% for m in messages %}
-        <div data-id="{{ m.id }}" style="margin:10px 0;">
-          <div class="muted small">{{ m.created_at }} · {{ m.sender_role }}{% if m.sender_name %} · {{ m.sender_name }}{% endif %}</div>
-          <div>{{ m.message }}</div>
+        <div class="chatmsg {% if m.sender_user_id == user.id %}me{% endif %}" data-id="{{ m.id }}">
+          <div class="muted small">
+            <b>{{ m.sender_name or m.sender_role }}</b>
+            <span class="muted">· {{ m.created_at }}</span>
+          </div>
+          <div class="chattext">{{ m.message }}</div>
         </div>
       {% endfor %}
     {% else %}
@@ -28,109 +30,105 @@
 
   <div class="spacer"></div>
 
-  <div class="row" style="gap:10px; align-items:flex-end;">
-    <textarea id="chatInput" rows="2" placeholder="Type a message…" style="flex:1; padding:12px; border-radius:12px; border:1px solid var(--line); background: rgba(8,12,26,.65); color: var(--text);"></textarea>
-    <button class="btn btn-primary" id="chatSend">Send</button>
+  <div class="row">
+    <input id="msgInput" placeholder="Type a message…" style="flex:1;">
+    <button class="btn btn-primary" id="sendBtn" type="button">Send</button>
   </div>
-  <div class="muted small" id="chatStatus"></div>
+  <div class="muted small" id="sendStatus"></div>
 </div>
 
 <script>
 (function(){
   const orderId = "{{ order_id }}";
-  const box = document.getElementById("chatBox");
-  const input = document.getElementById("chatInput");
-  const sendBtn = document.getElementById("chatSend");
-  const statusEl = document.getElementById("chatStatus");
+  const box = document.getElementById('chatBox');
+  const input = document.getElementById('msgInput');
+  const sendBtn = document.getElementById('sendBtn');
+  const statusEl = document.getElementById('sendStatus');
 
-  function computeLast(){
-    const nodes = box.querySelectorAll("[data-id]");
+  function lastId(){
+    const nodes = box.querySelectorAll('[data-id]');
     if(!nodes.length) return 0;
-    const id = parseInt(nodes[nodes.length-1].getAttribute("data-id") || "0", 10);
-    return isNaN(id) ? 0 : id;
+    const last = nodes[nodes.length-1];
+    const v = parseInt(last.getAttribute('data-id')||'0',10);
+    return isNaN(v)?0:v;
   }
 
-  let lastId = computeLast();
-
-  function scrollBottom(){
+  function scrollDown(){
     box.scrollTop = box.scrollHeight;
   }
-  scrollBottom();
+  scrollDown();
+
+  function renderMsg(m){
+    const wrap = document.createElement('div');
+    wrap.className = 'chatmsg';
+    wrap.setAttribute('data-id', m.id);
+
+    const hdr = document.createElement('div');
+    hdr.className = 'muted small';
+    const b = document.createElement('b');
+    b.textContent = m.sender_name || m.sender_role || 'User';
+    hdr.appendChild(b);
+    const t = document.createElement('span');
+    t.className = 'muted';
+    t.textContent = ' · ' + (m.created_at || '');
+    hdr.appendChild(t);
+
+    const body = document.createElement('div');
+    body.className = 'chattext';
+    body.textContent = m.message || '';
+
+    wrap.appendChild(hdr);
+    wrap.appendChild(body);
+    box.appendChild(wrap);
+  }
 
   async function poll(){
     try{
-      const r = await fetch(`/api/order/${orderId}/messages?since=${lastId}`, {headers:{'Accept':'application/json'}});
+      const since = lastId();
+      const r = await fetch(`/api/order/${orderId}/messages?since=${encodeURIComponent(since)}`, {cache:'no-store'});
+      if(!r.ok) return;
       const j = await r.json();
       if(!j.ok) return;
-
-      const msgs = j.messages || [];
-      if(msgs.length){
-        msgs.forEach(m => {
-          const wrap = document.createElement("div");
-          wrap.setAttribute("data-id", m.id);
-          wrap.style.margin = "10px 0";
-
-          const meta = document.createElement("div");
-          meta.className = "muted small";
-          const name = m.sender_name ? ` · ${m.sender_name}` : '';
-          meta.textContent = `${m.created_at} · ${m.sender_role}${name}`;
-
-          const body = document.createElement("div");
-          body.textContent = m.message;
-
-          wrap.appendChild(meta);
-          wrap.appendChild(body);
-          box.appendChild(wrap);
-
-          const mid = parseInt(m.id, 10);
-          if(!isNaN(mid)) lastId = Math.max(lastId, mid);
-        });
-        scrollBottom();
+      if(j.messages && j.messages.length){
+        j.messages.forEach(renderMsg);
+        scrollDown();
       }
-    }catch(e){
-      // ignore transient network errors
-    }
+    }catch(e){}
   }
 
   setInterval(poll, 3000);
 
   async function send(){
-    const msg = (input.value || "").trim();
+    const msg = (input.value || '').trim();
     if(!msg) return;
-
     sendBtn.disabled = true;
-    statusEl.textContent = "Sending…";
-
+    statusEl.textContent = 'Sending…';
     try{
       const r = await fetch(`/api/order/${orderId}/messages`, {
-        method: "POST",
-        headers: {"Content-Type":"application/json"},
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
         body: JSON.stringify({message: msg})
       });
-      const j = await r.json();
-
-      if(j.ok){
-        input.value = "";
-        statusEl.textContent = "";
-        await poll();
+      const j = await r.json().catch(()=>null);
+      if(!r.ok || !j || !j.ok){
+        statusEl.textContent = (j && j.error) ? ('Send failed: ' + j.error) : 'Send failed.';
       }else{
-        statusEl.textContent = j.error ? ("Send failed: " + j.error) : "Send failed.";
+        input.value = '';
+        statusEl.textContent = '';
+        poll();
       }
     }catch(e){
-      statusEl.textContent = "Send failed (network).";
+      statusEl.textContent = 'Send failed (network).';
     }finally{
       sendBtn.disabled = false;
+      input.focus();
     }
   }
 
-  sendBtn.addEventListener("click", send);
-  input.addEventListener("keydown", function(e){
-    if(e.key === "Enter" && !e.shiftKey){
-      e.preventDefault();
-      send();
-    }
+  sendBtn.addEventListener('click', send);
+  input.addEventListener('keydown', function(e){
+    if(e.key === 'Enter'){ send(); }
   });
 })();
 </script>
-
 {% endblock %}

@@ -7,47 +7,8 @@ from datetime import datetime, timedelta
 from functools import wraps
 from typing import Any, Dict, Optional
 
-from urllib.parse import quote
 import psycopg2
 import psycopg2.extras
-
-import os, random
-import requests
-
-def send_sms_termii(phone: str, message: str) -> bool:
-    api_key = os.environ.get("TERMII_API_KEY")
-    sender_id = os.environ.get("TERMII_SENDER_ID", "AgroMath")
-
-    if not api_key:
-        print("TERMII_API_KEY missing")
-        return False
-
-    # Termii generally expects international format, e.g. +2349066454125
-    # If your app stores local numbers, you can normalize here:
-    if phone.startswith("0"):
-        phone = "+234" + phone[1:]
-    elif phone.startswith("234"):
-        phone = "+" + phone
-
-    url = "https://api.ng.termii.com/api/sms/send"
-    payload = {
-        "to": phone,
-        "from": sender_id,
-        "sms": message,
-        "type": "plain",
-        "channel": "generic",
-        "api_key": api_key
-    }
-
-    try:
-        r = requests.post(url, json=payload, timeout=20)
-        if r.status_code >= 400:
-            print("Termii error:", r.status_code, r.text)
-            return False
-        return True
-    except Exception as e:
-        print("Termii exception:", e)
-        return False
 
 from flask import Flask, g, redirect, render_template, request, session, url_for, flash, jsonify, abort
 
@@ -240,33 +201,33 @@ def ensure_schema_sqlite() -> None:
         )
     """)
 
-
     conn.execute("""
         CREATE TABLE IF NOT EXISTS order_locations(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        order_id TEXT NOT NULL,
-        user_id INTEGER NOT NULL,
-        role TEXT NOT NULL, -- buyer|transporter
-        lat REAL NOT NULL,
-        lng REAL NOT NULL,
-        accuracy REAL,
-        created_at TEXT NOT NULL,
-        FOREIGN KEY(order_id) REFERENCES orders(id),
-        FOREIGN KEY(user_id) REFERENCES users(id)
-    )
-""")
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id TEXT NOT NULL,
+            user_id INTEGER NOT NULL,
+            role TEXT NOT NULL, -- origin|dropoff|transporter
+            lat REAL NOT NULL,
+            lng REAL NOT NULL,
+            accuracy REAL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(order_id) REFERENCES orders(id),
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+    """)
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS order_messages(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        order_id TEXT NOT NULL,
-        sender_user_id INTEGER NOT NULL,
-        message TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        FOREIGN KEY(order_id) REFERENCES orders(id),
-        FOREIGN KEY(sender_user_id) REFERENCES users(id)
-    )
-""")
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id TEXT NOT NULL,
+            sender_user_id INTEGER NOT NULL,
+            message TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(order_id) REFERENCES orders(id),
+            FOREIGN KEY(sender_user_id) REFERENCES users(id)
+        )
+    """)
+
     # Lightweight migrations for older dbs
     tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
     if "users" in tables:
@@ -369,28 +330,27 @@ def ensure_schema_postgres() -> None:
                 );
             """)
 
-        
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS order_locations(
-        id SERIAL PRIMARY KEY,
-        order_id TEXT NOT NULL REFERENCES orders(id),
-        user_id INTEGER NOT NULL REFERENCES users(id),
-        role TEXT NOT NULL,
-        lat DOUBLE PRECISION NOT NULL,
-        lng DOUBLE PRECISION NOT NULL,
-        accuracy DOUBLE PRECISION,
-        created_at TEXT NOT NULL
-    );
+                    id SERIAL PRIMARY KEY,
+                    order_id TEXT NOT NULL REFERENCES orders(id),
+                    user_id INTEGER NOT NULL REFERENCES users(id),
+                    role TEXT NOT NULL,
+                    lat DOUBLE PRECISION NOT NULL,
+                    lng DOUBLE PRECISION NOT NULL,
+                    accuracy DOUBLE PRECISION,
+                    created_at TEXT NOT NULL
+                );
             """)
 
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS order_messages(
-        id SERIAL PRIMARY KEY,
-        order_id TEXT NOT NULL REFERENCES orders(id),
-        sender_user_id INTEGER NOT NULL REFERENCES users(id),
-        message TEXT NOT NULL,
-        created_at TEXT NOT NULL
-    );
+                    id SERIAL PRIMARY KEY,
+                    order_id TEXT NOT NULL REFERENCES orders(id),
+                    sender_user_id INTEGER NOT NULL REFERENCES users(id),
+                    message TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
             """)
 
         conn.commit()
@@ -443,52 +403,43 @@ def role_required(*roles):
     return deco
 
 
-
 # -----------------------------
-# Order participants helper (used by tracking + chat)
+# Cross-DB row helpers
 # -----------------------------
 
 def _row_get(r, key: str, default=None):
+    """Safe getter for sqlite3.Row and psycopg2 RealDictCursor rows."""
+    if r is None:
+        return default
     try:
-        return r.get(key, default)  # postgres dict rows
+        return r.get(key, default)  # Postgres dict row
     except Exception:
         try:
-            return r[key]           # sqlite Row
+            return r[key]  # SQLite Row
         except Exception:
             return default
 
-def order_participant_ids(order_id: str) -> set[int]:
-    """buyer + farmers in order + accepted transporter"""
-    o = db_fetchone(f"SELECT * FROM orders WHERE id={_ph()}", (order_id,))
-    if not o:
-        return set()
-
-    ids: set[int] = {int(o["buyer_user_id"])}
-
-    # Farmers involved (via products in order)
-    rows = db_fetchall(f"""
-        SELECT DISTINCT p.farmer_user_id AS uid
-        FROM order_items oi
-        JOIN products p ON p.id=oi.product_id
-        WHERE oi.order_id={_ph()}
-    """, (order_id,))
-    for r in rows:
+def _row_to_dict(r) -> Optional[dict]:
+    if r is None:
+        return None
+    try:
+        # psycopg2 RealDictCursor row is already a dict
+        if isinstance(r, dict):
+            return dict(r)
+    except Exception:
+        pass
+    try:
+        return {k: r[k] for k in r.keys()}
+    except Exception:
         try:
-            ids.add(int(r["uid"]))
+            return dict(r)
         except Exception:
-            pass
+            return None
 
-    # Accepted transporter (if any)
-    aqid = _row_get(o, "accepted_quote_id")
-    if aqid:
-        q = db_fetchone(
-            f"SELECT * FROM quotes WHERE id={_ph()} AND order_id={_ph()}",
-            (aqid, order_id),
-        )
-        if q:
-            ids.add(int(q["transporter_user_id"]))
 
-    return ids
+# -----------------------------
+# Order participants (tracking + chat)
+# -----------------------------
 
 def accepted_transporter_id(order_id: str):
     o = db_fetchone(f"SELECT * FROM orders WHERE id={_ph()}", (order_id,))
@@ -505,19 +456,55 @@ def accepted_transporter_id(order_id: str):
         return None
     return int(q["transporter_user_id"])
 
+def order_participant_ids(order_id: str) -> set[int]:
+    """buyer + farmers in order + accepted transporter (if any)."""
+    o = db_fetchone(f"SELECT * FROM orders WHERE id={_ph()}", (order_id,))
+    if not o:
+        return set()
+
+    ids: set[int] = {int(o["buyer_user_id"])}
+
+    # Farmers involved (via products in order)
+    rows = db_fetchall(
+        f"""
+        SELECT DISTINCT p.farmer_user_id AS uid
+        FROM order_items oi
+        JOIN products p ON p.id=oi.product_id
+        WHERE oi.order_id={_ph()}
+        """,
+        (order_id,),
+    )
+    for r in rows:
+        uid = _row_get(r, "uid")
+        if uid is not None:
+            try:
+                ids.add(int(uid))
+            except Exception:
+                pass
+
+    atid = accepted_transporter_id(order_id)
+    if atid:
+        ids.add(int(atid))
+
+    return ids
+
+
+
 # -----------------------------
 # Notifications (Phase 1: polling + sound)
 # -----------------------------
 
 def notify_user(user_id: int, kind: str, message: str, link: str = "/orders") -> None:
-    """Create an in-app notification for a specific user."""
+    """Create an in-app notification for a specific user (and persist immediately)."""
     if not user_id:
         return
     db_execute(
         f"INSERT INTO notifications(user_id, kind, message, link, created_at) VALUES({_ph()}, {_ph()}, {_ph()}, {_ph()}, {_ph()})",
-        (user_id, kind, message, link, now_str()),
+        (int(user_id), kind, message, link, now_str()),
     )
+    # Commit here to avoid silent drops when callers forget to commit after notifying.
     db_commit()
+
 
 def notify_role(role: str, kind: str, message: str, link: str = "/orders") -> None:
     """Notify all active users in a role (used for transporters on new orders)."""
@@ -552,6 +539,16 @@ def index():
     if session.get("uid"):
         return redirect(url_for("dashboard"))
     return redirect(url_for("login"))
+
+
+@app.get("/terms")
+def terms():
+    return render_template("terms.html")
+
+@app.get("/privacy")
+def privacy():
+    return render_template("privacy.html")
+
 
 @app.get("/login")
 def login():
@@ -648,7 +645,7 @@ def api_notifications():
             "id": int(r["id"]),
             "kind": r["kind"],
             "message": r["message"],
-            "link": _row_get(r, "link") or "",
+            "link": (_row_get(r, "link") or ""),
             "created_at": r["created_at"],
         }
         for r in rows
@@ -656,11 +653,6 @@ def api_notifications():
 
     latest_id = items[-1]["id"] if items else since
     return jsonify({"latest_id": latest_id, "items": items})
-
-
-# -----------------------------
-# Routes: profile + onboarding
-# -----------------------------
 
 
 # -----------------------------
@@ -679,29 +671,14 @@ def track_order(order_id: str):
         flash("You don't have access to track this order.", "error")
         return redirect(url_for("orders"))
 
-    o = db_fetchone(f"SELECT status, origin, dest FROM orders WHERE id={_ph()}", (order_id,))
-    status = o["status"] if o else ""
-    dest_text = (o["dest"] if o else "") or ""
+    o = db_fetchone(f"SELECT * FROM orders WHERE id={_ph()}", (order_id,))
+    status = _row_get(o, "status", "") if o else ""
+    assigned = False
+    if u["role"] == "transporter":
+        atid = accepted_transporter_id(order_id)
+        assigned = bool(atid and int(atid) == int(u["id"]))
 
-    dropoff = db_fetchone(
-        f"""
-        SELECT lat, lng, accuracy, created_at
-        FROM order_locations
-        WHERE order_id={_ph()} AND role='dropoff'
-        ORDER BY id DESC
-        LIMIT 1
-        """,
-        (order_id,),
-    )
-
-    # For transporter: open Google Maps from current location to buyer destination
-    nav_url = ""
-    if dropoff:
-        nav_url = f"https://www.google.com/maps/dir/?api=1&destination={dropoff['lat']},{dropoff['lng']}&travelmode=driving"
-    elif dest_text:
-        nav_url = f"https://www.google.com/maps/dir/?api=1&destination={quote(dest_text)}&travelmode=driving"
-
-    return render_template("track.html", user=u, order_id=order_id, status=status, nav_url=nav_url)
+    return render_template("track.html", user=u, order_id=order_id, status=status, assigned=assigned)
 
 @app.get("/api/order/<order_id>/track")
 @login_required
@@ -714,11 +691,21 @@ def api_order_track(order_id: str):
     if not allowed or int(u["id"]) not in allowed:
         return jsonify({"ok": False, "error": "forbidden"}), 403
 
-    buyer = db_fetchone(
+    origin = db_fetchone(
         f"""
         SELECT lat, lng, accuracy, created_at
         FROM order_locations
-        WHERE order_id={_ph()} AND role='buyer'
+        WHERE order_id={_ph()} AND role='origin'
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (order_id,),
+    )
+    dropoff = db_fetchone(
+        f"""
+        SELECT lat, lng, accuracy, created_at
+        FROM order_locations
+        WHERE order_id={_ph()} AND role='dropoff'
         ORDER BY id DESC
         LIMIT 1
         """,
@@ -735,18 +722,7 @@ def api_order_track(order_id: str):
         (order_id,),
     )
 
-    dropoff = db_fetchone(
-        f"""
-        SELECT lat, lng, accuracy, created_at
-        FROM order_locations
-        WHERE order_id={_ph()} AND role='dropoff'
-        ORDER BY id DESC
-        LIMIT 1
-        """,
-        (order_id,),
-    )
-
-    return jsonify({"ok": True, "buyer": buyer, "transporter": transporter, "dropoff": dropoff})
+    return jsonify({"ok": True, "origin": _row_to_dict(origin), "buyer": _row_to_dict(dropoff), "transporter": _row_to_dict(transporter)})
 
 @app.post("/api/order/<order_id>/location")
 @login_required
@@ -755,7 +731,6 @@ def api_order_location(order_id: str):
     u = current_user()
     assert u is not None
 
-    # Only the accepted transporter can post live GPS
     atid = accepted_transporter_id(order_id)
     if not atid or int(u["id"]) != int(atid):
         return jsonify({"ok": False, "error": "not_accepted_transporter"}), 403
@@ -784,7 +759,7 @@ def api_order_location(order_id: str):
 
 
 # -----------------------------
-# Chat (buyer–accepted transporter–farmers) per order
+# Chat (per order)
 # -----------------------------
 
 @app.get("/chat/<order_id>")
@@ -799,9 +774,8 @@ def chat_order(order_id: str):
         flash("You don't have access to this chat.", "error")
         return redirect(url_for("orders"))
 
-    # Gate chat until a transporter is accepted
-    atid = accepted_transporter_id(order_id)
-    if not atid:
+    # Optionally gate chat until a transporter is accepted
+    if not accepted_transporter_id(order_id):
         flash("Chat becomes available after you accept a transporter quote.", "warn")
         return redirect(url_for("orders"))
 
@@ -830,9 +804,9 @@ def api_order_messages(order_id: str):
     if not allowed or int(u["id"]) not in allowed:
         return jsonify({"ok": False, "error": "forbidden"}), 403
 
-    since = request.args.get("since", "0")
+    since_raw = request.args.get("since", "0")
     try:
-        since_id = int(since)
+        since_id = int(since_raw)
     except Exception:
         since_id = 0
 
@@ -847,8 +821,7 @@ def api_order_messages(order_id: str):
         """,
         (order_id, since_id),
     )
-
-    return jsonify({"ok": True, "messages": msgs})
+    return jsonify({"ok": True, "messages": [ _row_to_dict(m) for m in msgs ]})
 
 @app.post("/api/order/<order_id>/messages")
 @login_required
@@ -861,17 +834,15 @@ def api_order_send_message(order_id: str):
     if not allowed or int(u["id"]) not in allowed:
         return jsonify({"ok": False, "error": "forbidden"}), 403
 
+    if not accepted_transporter_id(order_id):
+        return jsonify({"ok": False, "error": "chat_not_active"}), 400
+
     j = request.get_json(silent=True) or {}
     msg = (j.get("message") or "").strip()
     if not msg:
         return jsonify({"ok": False, "error": "empty"}), 400
     if len(msg) > 2000:
         msg = msg[:2000]
-
-    # Gate chat until a transporter is accepted
-    atid = accepted_transporter_id(order_id)
-    if not atid:
-        return jsonify({"ok": False, "error": "chat_not_active"}), 400
 
     db_execute(
         f"""
@@ -882,19 +853,25 @@ def api_order_send_message(order_id: str):
     )
     db_commit()
 
-    new_row = db_fetchone(
-        f"SELECT id FROM order_messages WHERE order_id={_ph()} AND sender_user_id={_ph()} ORDER BY id DESC LIMIT 1",
-        (order_id, int(u["id"])),
-    )
-    new_id = int(new_row["id"]) if new_row else 0
-
-    # Notify other participants
+    # Notify other participants (in-app)
     for uid in allowed:
         if int(uid) == int(u["id"]):
             continue
         notify_user(int(uid), "CHAT", f"New message on order {order_id}.", link=f"/chat/{order_id}")
 
+    # Return latest id
+    row = db_fetchone(
+        f"SELECT id FROM order_messages WHERE order_id={_ph()} ORDER BY id DESC LIMIT 1",
+        (order_id,),
+    )
+    new_id = int(row["id"]) if row else 0
     return jsonify({"ok": True, "id": new_id})
+
+
+
+# -----------------------------
+# Routes: profile + onboarding
+# -----------------------------
 
 @app.get("/profile")
 @login_required
@@ -1121,10 +1098,10 @@ def order_place():
     origin_lat = (request.form.get("origin_lat") or "").strip()
     origin_lng = (request.form.get("origin_lng") or "").strip()
     origin_accuracy = (request.form.get("origin_accuracy") or "").strip()
+
     dest_lat = (request.form.get("dest_lat") or "").strip()
     dest_lng = (request.form.get("dest_lng") or "").strip()
     dest_accuracy = (request.form.get("dest_accuracy") or "").strip()
-
     cart = get_cart()
     if not cart:
         flash("Cart is empty.", "error")
@@ -1152,43 +1129,38 @@ def order_place():
         (oid, u["id"], origin, dest, now_str()),
     )
 
+    # Persist buyer-provided pickup/dropoff coordinates (if provided)
+    def _to_float(s):
+        try:
+            return float(s)
+        except Exception:
+            return None
 
-    # Store buyer pickup GPS if provided
-    try:
-        if origin_lat and origin_lng:
-            lat = float(origin_lat)
-            lng = float(origin_lng)
-            acc = float(origin_accuracy) if origin_accuracy else None
-            if -90.0 <= lat <= 90.0 and -180.0 <= lng <= 180.0:
-                db_execute(
-                    f"""
-                    INSERT INTO order_locations(order_id, user_id, role, lat, lng, accuracy, created_at)
-                    VALUES({_ph()}, {_ph()}, 'buyer', {_ph()}, {_ph()}, {_ph()}, {_ph()})
-                    """,
-                    (oid, int(u["id"]), lat, lng, acc, now_str()),
-                )
-    except Exception:
-        pass
+    o_lat = _to_float(origin_lat)
+    o_lng = _to_float(origin_lng)
+    o_acc = _to_float(origin_accuracy) if origin_accuracy else None
 
+    d_lat = _to_float(dest_lat)
+    d_lng = _to_float(dest_lng)
+    d_acc = _to_float(dest_accuracy) if dest_accuracy else None
 
+    if o_lat is not None and o_lng is not None:
+        db_execute(
+            f"""
+            INSERT INTO order_locations(order_id, user_id, role, lat, lng, accuracy, created_at)
+            VALUES({_ph()}, {_ph()}, 'origin', {_ph()}, {_ph()}, {_ph()}, {_ph()})
+            """,
+            (oid, int(u["id"]), o_lat, o_lng, o_acc, now_str()),
+        )
 
-
-    # Store buyer dropoff GPS (destination) if provided
-    try:
-        if dest_lat and dest_lng:
-            dlat = float(dest_lat)
-            dlng = float(dest_lng)
-            dacc = float(dest_accuracy) if dest_accuracy else None
-            if -90.0 <= dlat <= 90.0 and -180.0 <= dlng <= 180.0:
-                db_execute(
-                    f"""
-                    INSERT INTO order_locations(order_id, user_id, role, lat, lng, accuracy, created_at)
-                    VALUES({_ph()}, {_ph()}, 'dropoff', {_ph()}, {_ph()}, {_ph()}, {_ph()})
-                    """,
-                    (oid, int(u["id"]), dlat, dlng, dacc, now_str()),
-                )
-    except Exception:
-        pass
+    if d_lat is not None and d_lng is not None:
+        db_execute(
+            f"""
+            INSERT INTO order_locations(order_id, user_id, role, lat, lng, accuracy, created_at)
+            VALUES({_ph()}, {_ph()}, 'dropoff', {_ph()}, {_ph()}, {_ph()}, {_ph()})
+            """,
+            (oid, int(u["id"]), d_lat, d_lng, d_acc, now_str()),
+        )
 
     for pid, qty in cart.items():
         pr = by_id.get(str(pid))

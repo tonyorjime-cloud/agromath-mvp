@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>Privacy Policy</h2>
+  <p class="muted">We collect only what we need to operate the MVP: your phone number, profile details, and order/chat data. Location sharing is optional and only used for order tracking.</p>
+
+  <div class="spacer"></div>
+  <h3>What we collect</h3>
+  <ul class="list">
+    <li>Account: phone number, name, role, hub (optional).</li>
+    <li>Orders: origin/destination text, order items, quotes, delivery status.</li>
+    <li>Chat: messages within an order.</li>
+    <li>Location: GPS coordinates only when you choose to capture/share it.</li>
+  </ul>
+
+  <div class="spacer"></div>
+  <h3>How we use it</h3>
+  <ul class="list">
+    <li>To create and fulfill orders and display tracking on active deliveries.</li>
+    <li>To send in-app notifications about orders and messages.</li>
+  </ul>
+
+  <div class="spacer"></div>
+  <p class="muted small">This policy will be updated as the product evolves (payments, KYC, etc.).</p>
+</div>
+{% endblock %}
