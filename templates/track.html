@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="row space">
+  <div>
+    <h2>Live Tracking</h2>
+    <div class="muted">Order {{ order_id }} · Status: {{ status }}</div>
+  </div>
+  <div class="pillrow">
+    <a class="btn btn-ghost" href="/orders">Back to Orders</a>
+  </div>
+</div>
+
+<div class="card">
+  <div class="muted small">
+    {% if user.role == 'transporter' %}
+      Share your live location so the buyer can track delivery.
+    {% else %}
+      Buyer view: you'll see the transporter's last known location once they share it.
+    {% endif %}
+  </div>
+
+  <div class="spacer"></div>
+
+  {% if user.role == 'transporter' %}
+    <div class="row">
+      <button class="btn btn-primary" id="gpsStart" type="button">Start sharing location</button>
+      <button class="btn btn-light" id="gpsStop" type="button" disabled>Stop</button>
+      <div class="muted small" id="gpsStatus" style="margin-left:10px;">Not sharing yet.</div>
+    </div>
+    <div class="spacer"></div>
+  {% endif %}
+
+  <div id="map" style="height:420px; border-radius:14px; overflow:hidden;"></div>
+
+  <div class="spacer"></div>
+  <div class="muted small" id="trackInfo">Waiting for location…</div>
+</div>
+
+<!-- Leaflet for maps (no install needed) -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<script>
+(function(){
+  const orderId = "{{ order_id }}";
+  const role = "{{ user.role }}";
+
+  // map init (Abuja-ish default)
+  const map = L.map('map').setView([9.06, 7.49], 12);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+
+  let buyerMarker = null;
+  let transporterMarker = null;
+
+  function setMarker(kind, loc){
+    if(!loc) return;
+    const lat = loc.lat, lng = loc.lng;
+    if(kind === 'buyer'){
+      if(!buyerMarker) buyerMarker = L.marker([lat,lng]).addTo(map).bindPopup('Buyer');
+      buyerMarker.setLatLng([lat,lng]);
+    } else {
+      if(!transporterMarker) transporterMarker = L.marker([lat,lng]).addTo(map).bindPopup('Transporter');
+      transporterMarker.setLatLng([lat,lng]);
+    }
+  }
+
+  async function refresh(){
+    try{
+      const r = await fetch(`/api/order/${orderId}/track`, {headers:{'Accept':'application/json'}});
+      const j = await r.json();
+      if(!j.ok){
+        document.getElementById('trackInfo').textContent = j.error || 'Not available';
+        return;
+      }
+      setMarker('buyer', j.buyer);
+      setMarker('transporter', j.transporter);
+
+      // fit bounds when we have at least transporter
+      const pts = [];
+      if(j.buyer) pts.push([j.buyer.lat, j.buyer.lng]);
+      if(j.transporter) pts.push([j.transporter.lat, j.transporter.lng]);
+      if(pts.length){
+        map.fitBounds(pts, {padding:[30,30]});
+      }
+      const t = j.transporter ? `Transporter: ${j.transporter.lat.toFixed(5)}, ${j.transporter.lng.toFixed(5)} (${j.transporter.created_at})` : 'Transporter has not shared location yet.';
+      document.getElementById('trackInfo').textContent = t;
+    }catch(e){
+      document.getElementById('trackInfo').textContent = 'Refresh failed (network).';
+    }
+  }
+
+  refresh();
+  setInterval(refresh, 10000); // 10s poll
+
+  // If transporter, hook up GPS buttons using browser geolocation.
+  if(role === 'transporter'){
+    let watchId = null;
+
+    const startBtn = document.getElementById('gpsStart');
+    const stopBtn = document.getElementById('gpsStop');
+    const statusEl = document.getElementById('gpsStatus');
+
+    function setState(running){
+      startBtn.disabled = running;
+      stopBtn.disabled = !running;
+    }
+
+    async function postLoc(p){
+      const payload = {
+        lat: p.coords.latitude,
+        lng: p.coords.longitude,
+        accuracy: p.coords.accuracy
+      };
+      try{
+        await fetch('/api/location', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify(payload)
+        });
+        statusEl.textContent = `Sharing… accuracy ${Math.round(payload.accuracy||0)}m`;
+      }catch(e){
+        statusEl.textContent = 'Sharing… but post failed (network).';
+      }
+    }
+
+    startBtn.addEventListener('click', function(){
+      if(!navigator.geolocation){
+        statusEl.textContent = 'Geolocation not supported on this browser.';
+        return;
+      }
+      setState(true);
+      statusEl.textContent = 'Requesting permission…';
+      watchId = navigator.geolocation.watchPosition(
+        postLoc,
+        function(err){
+          statusEl.textContent = 'Location error: ' + err.message;
+          setState(false);
+        },
+        {enableHighAccuracy:true, maximumAge:10000, timeout:15000}
+      );
+    });
+
+    stopBtn.addEventListener('click', function(){
+      if(watchId !== null && navigator.geolocation){
+        navigator.geolocation.clearWatch(watchId);
+      }
+      watchId = null;
+      setState(false);
+      statusEl.textContent = 'Stopped.';
+    });
+  }
+})();
+</script>
+{% endblock %}

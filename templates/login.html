@@ -1,41 +1,44 @@
 {% extends "base.html" %}
 {% block content %}
 
-<div class="card">
-  <h2>Login</h2>
-  <p class="muted">Enter your phone number. We'll send you a one-time password (OTP).</p>
+<div class="grid2">
+  <div class="card">
+    <h2>Login</h2>
+    <p class="muted">Demo OTP is displayed on-screen (no SMS yet).</p>
 
-  {% if sms_enabled %}
-    <div class="notice success">
-      SMS OTP is enabled. Please check your phone.
-    </div>
-  {% else %}
-    <div class="notice warn">
-      SMS OTP is not enabled yet (demo mode). OTP will be shown on-screen for testing.
-    </div>
-  {% endif %}
+    <h3>1) Send OTP</h3>
+    <form method="post" action="/login" class="stack">
+      <input name="phone" placeholder="Phone number" required value="{{ phone or '' }}">
+      <button class="btn btn-primary" type="submit">Send OTP</button>
+    </form>
 
-  <div class="spacer"></div>
+    {% if demo_otp %}
+      <div class="spacer"></div>
+      <div class="note">
+        <div class="strong">Demo OTP (for testing)</div>
+        <div class="otp">{{ demo_otp }}</div>
+        <div class="muted small">Valid for {{ 10 }} minutes.</div>
+      </div>
+    {% endif %}
 
-  <form method="post" action="/login" class="row">
-    <input name="phone" placeholder="Phone e.g. 09066454125" value="{{ phone or '' }}" required />
-    <button class="btn btn-primary" type="submit">Send OTP</button>
-  </form>
+    <div class="spacer"></div>
 
-  <div class="spacer"></div>
+    <h3>2) Verify OTP</h3>
+    <form method="post" action="/verify" class="stack">
+      <input name="otp" placeholder="Enter OTP" required>
+      <button class="btn btn-dark" type="submit">Verify</button>
+    </form>
+  </div>
 
-  {% if demo_otp %}
-    <p class="pill">Demo OTP: <b>{{ demo_otp }}</b></p>
-  {% endif %}
-
-  <form method="post" action="/verify" class="row">
-    <input name="otp" placeholder="Enter OTP" required />
-    <button class="btn btn-light" type="submit">Verify</button>
-  </form>
-
-  <p class="muted small" style="margin-top:12px;">
-    Tip: On Render, set <code>TERMII_API_KEY</code> and <code>TERMII_SENDER_ID</code> in Environment Variables to enable real SMS.
-  </p>
+  <div class="card hero">
+    <h2>What you’re testing</h2>
+    <ul class="list">
+      <li>Buyer: add items → cart → checkout → place order</li>
+      <li>Transporter: quote → buyer accepts/declines → deliver</li>
+      <li>Farmer: request approval → list products → see relevant orders</li>
+    </ul>
+    <p class="muted">Next phase is real payments + maps + escrow.</p>
+  </div>
 </div>
 
 {% endblock %}
