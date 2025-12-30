@@ -52,7 +52,16 @@
     <h3>Place Order</h3>
     <form method="post" action="/order/place" class="stack">
       <label class="label">Origin (pickup)</label>
-      <input name="origin" placeholder="e.g., Makurdi Hub" required>
+      <input id="originText" name="origin" placeholder="e.g., Makurdi Hub" required>
+
+      <div class="row" style="justify-content:space-between;gap:10px;">
+        <button type="button" class="btn btn-ghost" id="btnUseGps">Use my current location</button>
+        <div class="muted small" id="gpsOriginStatus"></div>
+      </div>
+
+      <input type="hidden" name="origin_lat" id="origin_lat">
+      <input type="hidden" name="origin_lng" id="origin_lng">
+      <input type="hidden" name="origin_accuracy" id="origin_accuracy">
       <label class="label">Destination</label>
       <input name="dest" placeholder="e.g., Abuja" required>
       <button class="btn btn-primary" type="submit" {% if not items %}disabled{% endif %}>Place Order</button>
@@ -61,5 +70,48 @@
     <p class="muted small">After placing the order, transporters will submit quotes. You can accept or decline.</p>
   </div>
 </div>
+
+
+<script>
+(function(){
+  const btn = document.getElementById('btnUseGps');
+  const statusEl = document.getElementById('gpsOriginStatus');
+  const latEl = document.getElementById('origin_lat');
+  const lngEl = document.getElementById('origin_lng');
+  const accEl = document.getElementById('origin_accuracy');
+  const originText = document.getElementById('originText');
+
+  if(!btn) return;
+
+  btn.addEventListener('click', function(){
+    if(!navigator.geolocation){
+      statusEl.textContent = 'Geolocation not supported.';
+      return;
+    }
+    statusEl.textContent = 'Requesting permission…';
+    navigator.geolocation.getCurrentPosition(
+      function(p){
+        const lat = p.coords.latitude;
+        const lng = p.coords.longitude;
+        const acc = p.coords.accuracy;
+
+        latEl.value = String(lat);
+        lngEl.value = String(lng);
+        accEl.value = String(acc || '');
+
+        if(!originText.value.trim()){
+          originText.value = 'Current Location';
+        }
+
+        statusEl.textContent = `Captured (±${Math.round(acc||0)}m)`;
+      },
+      function(err){
+        statusEl.textContent = 'Location error: ' + err.message;
+      },
+      {enableHighAccuracy:true, maximumAge:60000, timeout:15000}
+    );
+  });
+})();
+</script>
 
 {% endblock %}

@@ -112,7 +112,7 @@
         accuracy: p.coords.accuracy
       };
       try{
-        await fetch('/api/location', {
+        await fetch(`/api/order/${orderId}/location`, {
           method:'POST',
           headers:{'Content-Type':'application/json'},
           body: JSON.stringify(payload)

@@ -48,7 +48,7 @@ def send_sms_termii(phone: str, message: str) -> bool:
         print("Termii exception:", e)
         return False
 
-from flask import Flask, g, redirect, render_template, request, session, url_for, flash, jsonify
+from flask import Flask, g, redirect, render_template, request, session, url_for, flash, jsonify, abort
 
 APP_TITLE = "AgroMath MVP"
 
@@ -239,6 +239,33 @@ def ensure_schema_sqlite() -> None:
         )
     """)
 
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS order_locations(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        order_id TEXT NOT NULL,
+        user_id INTEGER NOT NULL,
+        role TEXT NOT NULL, -- buyer|transporter
+        lat REAL NOT NULL,
+        lng REAL NOT NULL,
+        accuracy REAL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(order_id) REFERENCES orders(id),
+        FOREIGN KEY(user_id) REFERENCES users(id)
+    )
+""")
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS order_messages(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        order_id TEXT NOT NULL,
+        sender_user_id INTEGER NOT NULL,
+        message TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(order_id) REFERENCES orders(id),
+        FOREIGN KEY(sender_user_id) REFERENCES users(id)
+    )
+""")
     # Lightweight migrations for older dbs
     tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
     if "users" in tables:
@@ -341,6 +368,30 @@ def ensure_schema_postgres() -> None:
                 );
             """)
 
+        
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS order_locations(
+        id SERIAL PRIMARY KEY,
+        order_id TEXT NOT NULL REFERENCES orders(id),
+        user_id INTEGER NOT NULL REFERENCES users(id),
+        role TEXT NOT NULL,
+        lat DOUBLE PRECISION NOT NULL,
+        lng DOUBLE PRECISION NOT NULL,
+        accuracy DOUBLE PRECISION,
+        created_at TEXT NOT NULL
+    );
+            """)
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS order_messages(
+        id SERIAL PRIMARY KEY,
+        order_id TEXT NOT NULL REFERENCES orders(id),
+        sender_user_id INTEGER NOT NULL REFERENCES users(id),
+        message TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    );
+            """)
+
         conn.commit()
     finally:
         conn.close()
@@ -390,6 +441,68 @@ def role_required(*roles):
         return wrapper
     return deco
 
+
+
+# -----------------------------
+# Order participants helper (used by tracking + chat)
+# -----------------------------
+
+def _row_get(r, key: str, default=None):
+    try:
+        return r.get(key, default)  # postgres dict rows
+    except Exception:
+        try:
+            return r[key]           # sqlite Row
+        except Exception:
+            return default
+
+def order_participant_ids(order_id: str) -> set[int]:
+    """buyer + farmers in order + accepted transporter"""
+    o = db_fetchone(f"SELECT * FROM orders WHERE id={_ph()}", (order_id,))
+    if not o:
+        return set()
+
+    ids: set[int] = {int(o["buyer_user_id"])}
+
+    # Farmers involved (via products in order)
+    rows = db_fetchall(f"""
+        SELECT DISTINCT p.farmer_user_id AS uid
+        FROM order_items oi
+        JOIN products p ON p.id=oi.product_id
+        WHERE oi.order_id={_ph()}
+    """, (order_id,))
+    for r in rows:
+        try:
+            ids.add(int(r["uid"]))
+        except Exception:
+            pass
+
+    # Accepted transporter (if any)
+    aqid = _row_get(o, "accepted_quote_id")
+    if aqid:
+        q = db_fetchone(
+            f"SELECT * FROM quotes WHERE id={_ph()} AND order_id={_ph()}",
+            (aqid, order_id),
+        )
+        if q:
+            ids.add(int(q["transporter_user_id"]))
+
+    return ids
+
+def accepted_transporter_id(order_id: str):
+    o = db_fetchone(f"SELECT * FROM orders WHERE id={_ph()}", (order_id,))
+    if not o:
+        return None
+    aqid = _row_get(o, "accepted_quote_id")
+    if not aqid:
+        return None
+    q = db_fetchone(
+        f"SELECT * FROM quotes WHERE id={_ph()} AND order_id={_ph()}",
+        (aqid, order_id),
+    )
+    if not q:
+        return None
+    return int(q["transporter_user_id"])
 
 # -----------------------------
 # Notifications (Phase 1: polling + sound)
@@ -547,6 +660,209 @@ def api_notifications():
 # -----------------------------
 # Routes: profile + onboarding
 # -----------------------------
+
+
+# -----------------------------
+# Tracking (browser GPS)
+# -----------------------------
+
+@app.get("/track/<order_id>")
+@login_required
+def track_order(order_id: str):
+    u = current_user()
+    if not u:
+        return redirect(url_for("login"))
+
+    allowed = order_participant_ids(order_id)
+    if not allowed or int(u["id"]) not in allowed:
+        flash("You don't have access to track this order.", "error")
+        return redirect(url_for("orders"))
+
+    o = db_fetchone(f"SELECT status FROM orders WHERE id={_ph()}", (order_id,))
+    status = o["status"] if o else ""
+    return render_template("track.html", user=u, order_id=order_id, status=status)
+
+@app.get("/api/order/<order_id>/track")
+@login_required
+def api_order_track(order_id: str):
+    u = current_user()
+    if not u:
+        return jsonify({"ok": False, "error": "not_logged_in"}), 401
+
+    allowed = order_participant_ids(order_id)
+    if not allowed or int(u["id"]) not in allowed:
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+
+    buyer = db_fetchone(
+        f"""
+        SELECT lat, lng, accuracy, created_at
+        FROM order_locations
+        WHERE order_id={_ph()} AND role='buyer'
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (order_id,),
+    )
+    transporter = db_fetchone(
+        f"""
+        SELECT lat, lng, accuracy, created_at
+        FROM order_locations
+        WHERE order_id={_ph()} AND role='transporter'
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (order_id,),
+    )
+
+    return jsonify({"ok": True, "buyer": buyer, "transporter": transporter})
+
+@app.post("/api/order/<order_id>/location")
+@login_required
+@role_required("transporter")
+def api_order_location(order_id: str):
+    u = current_user()
+    assert u is not None
+
+    # Only the accepted transporter can post live GPS
+    atid = accepted_transporter_id(order_id)
+    if not atid or int(u["id"]) != int(atid):
+        return jsonify({"ok": False, "error": "not_accepted_transporter"}), 403
+
+    j = request.get_json(silent=True) or {}
+    try:
+        lat = float(j.get("lat"))
+        lng = float(j.get("lng"))
+        acc = j.get("accuracy")
+        acc = float(acc) if acc is not None else None
+    except Exception:
+        return jsonify({"ok": False, "error": "bad_payload"}), 400
+
+    if not (-90.0 <= lat <= 90.0 and -180.0 <= lng <= 180.0):
+        return jsonify({"ok": False, "error": "bad_coords"}), 400
+
+    db_execute(
+        f"""
+        INSERT INTO order_locations(order_id, user_id, role, lat, lng, accuracy, created_at)
+        VALUES({_ph()}, {_ph()}, 'transporter', {_ph()}, {_ph()}, {_ph()}, {_ph()})
+        """,
+        (order_id, int(u["id"]), lat, lng, acc, now_str()),
+    )
+    db_commit()
+    return jsonify({"ok": True})
+
+
+# -----------------------------
+# Chat (buyer–accepted transporter–farmers) per order
+# -----------------------------
+
+@app.get("/chat/<order_id>")
+@login_required
+def chat_order(order_id: str):
+    u = current_user()
+    if not u:
+        return redirect(url_for("login"))
+
+    allowed = order_participant_ids(order_id)
+    if not allowed or int(u["id"]) not in allowed:
+        flash("You don't have access to this chat.", "error")
+        return redirect(url_for("orders"))
+
+    # Gate chat until a transporter is accepted
+    atid = accepted_transporter_id(order_id)
+    if not atid:
+        flash("Chat becomes available after you accept a transporter quote.", "warn")
+        return redirect(url_for("orders"))
+
+    msgs = db_fetchall(
+        f"""
+        SELECT m.*, u.name AS sender_name, u.role AS sender_role
+        FROM order_messages m
+        JOIN users u ON u.id=m.sender_user_id
+        WHERE m.order_id={_ph()}
+        ORDER BY m.id ASC
+        LIMIT 200
+        """,
+        (order_id,),
+    )
+
+    return render_template("chat.html", user=u, order_id=order_id, messages=msgs)
+
+@app.get("/api/order/<order_id>/messages")
+@login_required
+def api_order_messages(order_id: str):
+    u = current_user()
+    if not u:
+        return jsonify({"ok": False, "error": "not_logged_in"}), 401
+
+    allowed = order_participant_ids(order_id)
+    if not allowed or int(u["id"]) not in allowed:
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+
+    since = request.args.get("since", "0")
+    try:
+        since_id = int(since)
+    except Exception:
+        since_id = 0
+
+    msgs = db_fetchall(
+        f"""
+        SELECT m.*, u.name AS sender_name, u.role AS sender_role
+        FROM order_messages m
+        JOIN users u ON u.id=m.sender_user_id
+        WHERE m.order_id={_ph()} AND m.id > {_ph()}
+        ORDER BY m.id ASC
+        LIMIT 200
+        """,
+        (order_id, since_id),
+    )
+
+    return jsonify({"ok": True, "messages": msgs})
+
+@app.post("/api/order/<order_id>/messages")
+@login_required
+def api_order_send_message(order_id: str):
+    u = current_user()
+    if not u:
+        return jsonify({"ok": False, "error": "not_logged_in"}), 401
+
+    allowed = order_participant_ids(order_id)
+    if not allowed or int(u["id"]) not in allowed:
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+
+    j = request.get_json(silent=True) or {}
+    msg = (j.get("message") or "").strip()
+    if not msg:
+        return jsonify({"ok": False, "error": "empty"}), 400
+    if len(msg) > 2000:
+        msg = msg[:2000]
+
+    # Gate chat until a transporter is accepted
+    atid = accepted_transporter_id(order_id)
+    if not atid:
+        return jsonify({"ok": False, "error": "chat_not_active"}), 400
+
+    db_execute(
+        f"""
+        INSERT INTO order_messages(order_id, sender_user_id, message, created_at)
+        VALUES({_ph()}, {_ph()}, {_ph()}, {_ph()})
+        """,
+        (order_id, int(u["id"]), msg, now_str()),
+    )
+    db_commit()
+
+    new_row = db_fetchone(
+        f"SELECT id FROM order_messages WHERE order_id={_ph()} AND sender_user_id={_ph()} ORDER BY id DESC LIMIT 1",
+        (order_id, int(u["id"])),
+    )
+    new_id = int(new_row["id"]) if new_row else 0
+
+    # Notify other participants
+    for uid in allowed:
+        if int(uid) == int(u["id"]):
+            continue
+        notify_user(int(uid), "CHAT", f"New message on order {order_id}.", link=f"/chat/{order_id}")
+
+    return jsonify({"ok": True, "id": new_id})
 
 @app.get("/profile")
 @login_required
@@ -768,6 +1084,12 @@ def make_order_id() -> str:
 def order_place():
     origin = (request.form.get("origin") or "").strip() or "Unknown"
     dest = (request.form.get("dest") or "").strip() or "Unknown"
+
+    # Optional browser GPS capture at checkout
+    origin_lat = (request.form.get("origin_lat") or "").strip()
+    origin_lng = (request.form.get("origin_lng") or "").strip()
+    origin_accuracy = (request.form.get("origin_accuracy") or "").strip()
+
     cart = get_cart()
     if not cart:
         flash("Cart is empty.", "error")
@@ -794,6 +1116,26 @@ def order_place():
         """,
         (oid, u["id"], origin, dest, now_str()),
     )
+
+
+    # Store buyer pickup GPS if provided
+    try:
+        if origin_lat and origin_lng:
+            lat = float(origin_lat)
+            lng = float(origin_lng)
+            acc = float(origin_accuracy) if origin_accuracy else None
+            if -90.0 <= lat <= 90.0 and -180.0 <= lng <= 180.0:
+                db_execute(
+                    f"""
+                    INSERT INTO order_locations(order_id, user_id, role, lat, lng, accuracy, created_at)
+                    VALUES({_ph()}, {_ph()}, 'buyer', {_ph()}, {_ph()}, {_ph()}, {_ph()})
+                    """,
+                    (oid, int(u["id"]), lat, lng, acc, now_str()),
+                )
+    except Exception:
+        pass
+
+
 
     for pid, qty in cart.items():
         pr = by_id.get(str(pid))
