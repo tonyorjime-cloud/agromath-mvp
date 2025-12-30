@@ -516,7 +516,7 @@ def notify_user(user_id: int, kind: str, message: str, link: str = "/orders") ->
         f"INSERT INTO notifications(user_id, kind, message, link, created_at) VALUES({_ph()}, {_ph()}, {_ph()}, {_ph()}, {_ph()})",
         (user_id, kind, message, link, now_str()),
     )
-
+    db_commit()
 
 def notify_role(role: str, kind: str, message: str, link: str = "/orders") -> None:
     """Notify all active users in a role (used for transporters on new orders)."""
@@ -647,7 +647,7 @@ def api_notifications():
             "id": int(r["id"]),
             "kind": r["kind"],
             "message": r["message"],
-            "link": r.get("link") or "",
+            "link": _row_get(r, "link") or "",
             "created_at": r["created_at"],
         }
         for r in rows
