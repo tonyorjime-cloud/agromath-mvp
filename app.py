@@ -1243,15 +1243,6 @@ def transport_deliver():
     return redirect(url_for("transporter_dashboard"))
 from flask import send_from_directory
 
-@app.route("/OneSignalSDKWorker.js")
-def onesignal_worker():
-    return send_from_directory(
-        directory="static/onesignal",
-        path="OneSignalSDKWorker.js",
-        mimetype="application/javascript"
-    )
-
-
 
 
 if __name__ == "__main__":
