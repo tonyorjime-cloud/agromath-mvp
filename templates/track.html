@@ -22,9 +22,12 @@
   <div class="spacer"></div>
 
   {% if user.role == 'transporter' %}
-    <div class="row">
+    <div class="row" style="gap:10px; flex-wrap:wrap;">
       <button class="btn btn-primary" id="gpsStart" type="button">Start sharing location</button>
       <button class="btn btn-light" id="gpsStop" type="button" disabled>Stop</button>
+      {% if nav_url %}
+        <a class="btn btn-ghost" href="{{ nav_url }}" target="_blank" rel="noopener">Navigate to Buyer</a>
+      {% endif %}
       <div class="muted small" id="gpsStatus" style="margin-left:10px;">Not sharing yet.</div>
     </div>
     <div class="spacer"></div>
@@ -51,13 +54,17 @@
 
   let buyerMarker = null;
   let transporterMarker = null;
+  let dropoffMarker = null;
 
-  function setMarker(kind, loc){
+    function setMarker(kind, loc){
     if(!loc) return;
     const lat = loc.lat, lng = loc.lng;
     if(kind === 'buyer'){
-      if(!buyerMarker) buyerMarker = L.marker([lat,lng]).addTo(map).bindPopup('Buyer');
+      if(!buyerMarker) buyerMarker = L.marker([lat,lng]).addTo(map).bindPopup('Pickup');
       buyerMarker.setLatLng([lat,lng]);
+    } else if(kind === 'dropoff') {
+      if(!dropoffMarker) dropoffMarker = L.marker([lat,lng]).addTo(map).bindPopup('Buyer (Drop-off)');
+      dropoffMarker.setLatLng([lat,lng]);
     } else {
       if(!transporterMarker) transporterMarker = L.marker([lat,lng]).addTo(map).bindPopup('Transporter');
       transporterMarker.setLatLng([lat,lng]);
@@ -73,11 +80,13 @@
         return;
       }
       setMarker('buyer', j.buyer);
+      setMarker('dropoff', j.dropoff);
       setMarker('transporter', j.transporter);
 
       // fit bounds when we have at least transporter
       const pts = [];
       if(j.buyer) pts.push([j.buyer.lat, j.buyer.lng]);
+      if(j.dropoff) pts.push([j.dropoff.lat, j.dropoff.lng]);
       if(j.transporter) pts.push([j.transporter.lat, j.transporter.lng]);
       if(pts.length){
         map.fitBounds(pts, {padding:[30,30]});

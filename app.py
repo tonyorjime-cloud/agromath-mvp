@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from functools import wraps
 from typing import Any, Dict, Optional
 
+from urllib.parse import quote
 import psycopg2
 import psycopg2.extras
 
@@ -678,9 +679,29 @@ def track_order(order_id: str):
         flash("You don't have access to track this order.", "error")
         return redirect(url_for("orders"))
 
-    o = db_fetchone(f"SELECT status FROM orders WHERE id={_ph()}", (order_id,))
+    o = db_fetchone(f"SELECT status, origin, dest FROM orders WHERE id={_ph()}", (order_id,))
     status = o["status"] if o else ""
-    return render_template("track.html", user=u, order_id=order_id, status=status)
+    dest_text = (o["dest"] if o else "") or ""
+
+    dropoff = db_fetchone(
+        f"""
+        SELECT lat, lng, accuracy, created_at
+        FROM order_locations
+        WHERE order_id={_ph()} AND role='dropoff'
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (order_id,),
+    )
+
+    # For transporter: open Google Maps from current location to buyer destination
+    nav_url = ""
+    if dropoff:
+        nav_url = f"https://www.google.com/maps/dir/?api=1&destination={dropoff['lat']},{dropoff['lng']}&travelmode=driving"
+    elif dest_text:
+        nav_url = f"https://www.google.com/maps/dir/?api=1&destination={quote(dest_text)}&travelmode=driving"
+
+    return render_template("track.html", user=u, order_id=order_id, status=status, nav_url=nav_url)
 
 @app.get("/api/order/<order_id>/track")
 @login_required
@@ -714,7 +735,18 @@ def api_order_track(order_id: str):
         (order_id,),
     )
 
-    return jsonify({"ok": True, "buyer": buyer, "transporter": transporter})
+    dropoff = db_fetchone(
+        f"""
+        SELECT lat, lng, accuracy, created_at
+        FROM order_locations
+        WHERE order_id={_ph()} AND role='dropoff'
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (order_id,),
+    )
+
+    return jsonify({"ok": True, "buyer": buyer, "transporter": transporter, "dropoff": dropoff})
 
 @app.post("/api/order/<order_id>/location")
 @login_required
@@ -1089,6 +1121,9 @@ def order_place():
     origin_lat = (request.form.get("origin_lat") or "").strip()
     origin_lng = (request.form.get("origin_lng") or "").strip()
     origin_accuracy = (request.form.get("origin_accuracy") or "").strip()
+    dest_lat = (request.form.get("dest_lat") or "").strip()
+    dest_lng = (request.form.get("dest_lng") or "").strip()
+    dest_accuracy = (request.form.get("dest_accuracy") or "").strip()
 
     cart = get_cart()
     if not cart:
@@ -1136,6 +1171,24 @@ def order_place():
         pass
 
 
+
+
+    # Store buyer dropoff GPS (destination) if provided
+    try:
+        if dest_lat and dest_lng:
+            dlat = float(dest_lat)
+            dlng = float(dest_lng)
+            dacc = float(dest_accuracy) if dest_accuracy else None
+            if -90.0 <= dlat <= 90.0 and -180.0 <= dlng <= 180.0:
+                db_execute(
+                    f"""
+                    INSERT INTO order_locations(order_id, user_id, role, lat, lng, accuracy, created_at)
+                    VALUES({_ph()}, {_ph()}, 'dropoff', {_ph()}, {_ph()}, {_ph()}, {_ph()})
+                    """,
+                    (oid, int(u["id"]), dlat, dlng, dacc, now_str()),
+                )
+    except Exception:
+        pass
 
     for pid, qty in cart.items():
         pr = by_id.get(str(pid))

@@ -62,8 +62,17 @@
       <input type="hidden" name="origin_lat" id="origin_lat">
       <input type="hidden" name="origin_lng" id="origin_lng">
       <input type="hidden" name="origin_accuracy" id="origin_accuracy">
-      <label class="label">Destination</label>
-      <input name="dest" placeholder="e.g., Abuja" required>
+      <label class="label">Destination (buyer drop-off)</label>
+      <input id="destText" name="dest" placeholder="e.g., Wuse 2, Abuja" required>
+
+      <div class="row" style="justify-content:space-between;gap:10px;">
+        <button type="button" class="btn btn-ghost" id="btnUseGpsDest">Use my current location</button>
+        <div class="muted small" id="gpsDestStatus"></div>
+      </div>
+
+      <input type="hidden" name="dest_lat" id="dest_lat">
+      <input type="hidden" name="dest_lng" id="dest_lng">
+      <input type="hidden" name="dest_accuracy" id="dest_accuracy">
       <button class="btn btn-primary" type="submit" {% if not items %}disabled{% endif %}>Place Order</button>
     </form>
 
@@ -74,43 +83,51 @@
 
 <script>
 (function(){
-  const btn = document.getElementById('btnUseGps');
-  const statusEl = document.getElementById('gpsOriginStatus');
-  const latEl = document.getElementById('origin_lat');
-  const lngEl = document.getElementById('origin_lng');
-  const accEl = document.getElementById('origin_accuracy');
-  const originText = document.getElementById('originText');
+  function bindGps(btnId, statusId, latId, lngId, accId, textId){
+    const btn = document.getElementById(btnId);
+    const statusEl = document.getElementById(statusId);
+    const latEl = document.getElementById(latId);
+    const lngEl = document.getElementById(lngId);
+    const accEl = document.getElementById(accId);
+    const textEl = document.getElementById(textId);
 
-  if(!btn) return;
+    if(!btn) return;
 
-  btn.addEventListener('click', function(){
-    if(!navigator.geolocation){
-      statusEl.textContent = 'Geolocation not supported.';
-      return;
-    }
-    statusEl.textContent = 'Requesting permission…';
-    navigator.geolocation.getCurrentPosition(
-      function(p){
-        const lat = p.coords.latitude;
-        const lng = p.coords.longitude;
-        const acc = p.coords.accuracy;
+    btn.addEventListener('click', function(){
+      if(!navigator.geolocation){
+        statusEl.textContent = 'Geolocation not supported.';
+        return;
+      }
+      statusEl.textContent = 'Requesting permission…';
+      navigator.geolocation.getCurrentPosition(
+        function(p){
+          const lat = p.coords.latitude;
+          const lng = p.coords.longitude;
+          const acc = p.coords.accuracy;
 
-        latEl.value = String(lat);
-        lngEl.value = String(lng);
-        accEl.value = String(acc || '');
+          latEl.value = String(lat);
+          lngEl.value = String(lng);
+          accEl.value = String(acc || '');
 
-        if(!originText.value.trim()){
-          originText.value = 'Current Location';
-        }
+          if(textEl && !textEl.value.trim()){
+            textEl.value = 'Current Location';
+          }
 
-        statusEl.textContent = `Captured (±${Math.round(acc||0)}m)`;
-      },
-      function(err){
-        statusEl.textContent = 'Location error: ' + err.message;
-      },
-      {enableHighAccuracy:true, maximumAge:60000, timeout:15000}
-    );
-  });
+          statusEl.textContent = `Captured (±${Math.round(acc||0)}m)`;
+        },
+        function(err){
+          statusEl.textContent = 'Location error: ' + err.message;
+        },
+        {enableHighAccuracy:true, maximumAge:60000, timeout:15000}
+      );
+    });
+  }
+
+  // Origin (pickup)
+  bindGps('btnUseGps', 'gpsOriginStatus', 'origin_lat', 'origin_lng', 'origin_accuracy', 'originText');
+
+  // Destination (drop-off)
+  bindGps('btnUseGpsDest', 'gpsDestStatus', 'dest_lat', 'dest_lng', 'dest_accuracy', 'destText');
 })();
 </script>
 
