@@ -60,6 +60,24 @@ def now_str() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def log_order_status(order_id: str, status: str, actor: dict | None = None) -> None:
+    """Append a status event for timeline rendering."""
+    try:
+        actor_id = actor.get("id") if actor else None
+        actor_role = actor.get("role") if actor else None
+        db_execute(
+            f"""
+            INSERT INTO order_status_events(order_id, status, actor_user_id, actor_role, created_at)
+            VALUES({_ph()}, {_ph()}, {_ph()}, {_ph()}, {_ph()})
+            """,
+            (order_id, status, actor_id, actor_role, now_str()),
+        )
+    except Exception:
+        # Timeline should never break core flows
+        logger.exception("log_order_status failed order_id=%s status=%s", order_id, status)
+
+
+
 def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Great-circle distance (km)."""
     from math import radians, sin, cos, asin, sqrt
@@ -330,6 +348,19 @@ def ensure_schema_sqlite() -> None:
             created_at TEXT NOT NULL,
             FOREIGN KEY(order_id) REFERENCES orders(id),
             FOREIGN KEY(sender_user_id) REFERENCES users(id)
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS order_status_events(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            actor_user_id INTEGER,
+            actor_role TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(order_id) REFERENCES orders(id),
+            FOREIGN KEY(actor_user_id) REFERENCES users(id)
         )
     """)
 
@@ -838,7 +869,30 @@ def api_order_track(order_id: str):
         (order_id,),
     )
 
-    return jsonify({"ok": True, "origin": _row_to_dict(origin), "buyer": _row_to_dict(dropoff), "transporter": _row_to_dict(transporter)})
+
+    order_row = db_fetchone(f"SELECT id, status, created_at FROM orders WHERE id={_ph()}", (order_id,))
+    events = db_fetchall(
+        f"""
+        SELECT status, actor_user_id, actor_role, created_at
+        FROM order_status_events
+        WHERE order_id={_ph()}
+        ORDER BY id ASC
+        """,
+        (order_id,),
+    )
+
+    return jsonify(
+        {
+            "ok": True,
+            "order": _row_to_dict(order_row),
+            "origin": _row_to_dict(origin),
+            "dropoff": _row_to_dict(dropoff),
+            "transporter": _row_to_dict(transporter),
+            "events": [_row_to_dict(e) for e in events],
+        }
+    )
+
+
 
 @app.post("/api/order/<order_id>/location")
 @login_required
@@ -1496,6 +1550,7 @@ def order_place():
         )
 
     db_commit()
+    log_order_status(oid, 'WAITING_FARMER_LOCATION', u)
 
     # Notify the farmer to share pickup location for this specific order.
     notify_user(int(farmer_id), "PICKUP_REQUEST", f"Order {oid} placed. Please share your pickup location so transporters can quote.", link=f"/farmer/order/{oid}/pickup")
@@ -1594,6 +1649,7 @@ def quote_accept():
         (quote_id, order_id),
     )
     db_commit()
+    log_order_status(order_id, 'QUOTE_ACCEPTED', u)
 
     # Notifications
     logger.info("quote_accepted order_id=%s quote_id=%s buyer_id=%s", order_id, quote_id, u["id"])
@@ -1763,6 +1819,7 @@ def farmer_share_pickup_post(order_id: str):
     if _row_get(o, "status") == "WAITING_FARMER_LOCATION":
         db_execute(f"UPDATE orders SET status='NEEDS_QUOTES' WHERE id={_ph()}", (order_id,))
     db_commit()
+    log_order_status(order_id, 'NEEDS_QUOTES', u)
 
     # Notify buyer that pickup is now available and transporters will be invited.
     buyer = db_fetchone(f"SELECT buyer_user_id FROM orders WHERE id={_ph()}", (order_id,))
@@ -1938,6 +1995,7 @@ def transport_start_trip():
 
     db_execute(f"UPDATE orders SET status='EN_ROUTE_TO_PICKUP' WHERE id={_ph()}", (order_id,))
     db_commit()
+    log_order_status(order_id, 'EN_ROUTE_TO_PICKUP', u)
 
     logger.info("order_en_route_to_pickup order_id=%s transporter_id=%s", order_id, u["id"])
 
@@ -1982,6 +2040,7 @@ def transport_picked_up():
 
     db_execute(f"UPDATE orders SET status='EN_ROUTE_TO_DROPOFF' WHERE id={_ph()}", (order_id,))
     db_commit()
+    log_order_status(order_id, 'EN_ROUTE_TO_DROPOFF', u)
 
     logger.info("order_en_route_to_dropoff order_id=%s transporter_id=%s", order_id, u["id"])
 
@@ -2027,6 +2086,7 @@ def transport_deliver():
     db_execute(f"UPDATE quotes SET status='DELIVERED' WHERE id={_ph()}", (q["id"],))
     db_execute(f"UPDATE orders SET status='DELIVERED' WHERE id={_ph()}", (order_id,))
     db_commit()
+    log_order_status(order_id, 'DELIVERED', u)
 
     buyer = db_fetchone(f"SELECT buyer_user_id FROM orders WHERE id={_ph()}", (order_id,))
     if buyer:

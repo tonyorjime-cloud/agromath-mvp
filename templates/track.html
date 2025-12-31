@@ -38,10 +38,22 @@
     <div class="spacer"></div>
   {% endif %}
 
-  <div id="map" style="height:420px; border-radius:14px; overflow:hidden;"></div>
+  <div class="grid2">
+    <div>
+      <div id="map" style="height:420px; border-radius:14px; overflow:hidden;"></div>
+      <div class="spacer"></div>
+      <div class="muted small" id="trackInfo">Waiting for location…</div>
+    </div>
 
-  <div class="spacer"></div>
-  <div class="muted small" id="trackInfo">Waiting for location…</div>
+    <div class="card">
+      <h3 class="m0">Delivery timeline</h3>
+      <div class="muted small">Clear, shared status for buyer, farmer and transporter.</div>
+      <div class="spacer"></div>
+      <div id="timeline" class="stack"></div>
+      <div class="spacer"></div>
+      <div class="muted small">Last transporter ping: <span id="lastUpdated">—</span></div>
+    </div>
+  </div>
 </div>
 
 <!-- Leaflet for maps (no install needed) -->
@@ -62,6 +74,8 @@
   let originMarker = null;
   let buyerMarker = null;
   let transporterMarker = null;
+  let routeLine = null;      // pickup -> drop-off (approx)
+  let legLine = null;        // transporter -> next target (approx)
 
   function setMarker(kind, loc){
     if(!loc) return;
@@ -78,6 +92,96 @@
     }
   }
 
+
+  function parseTs(ts){
+    if(!ts) return null;
+    // stored as 'YYYY-MM-DD HH:MM:SS'
+    const iso = ts.replace(' ', 'T');
+    const d = new Date(iso);
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  function ago(ts){
+    const d = parseTs(ts);
+    if(!d) return '—';
+    const diffMs = Date.now() - d.getTime();
+    const s = Math.max(0, Math.floor(diffMs/1000));
+    if(s < 60) return `${s}s ago`;
+    const m = Math.floor(s/60);
+    if(m < 60) return `${m}m ago`;
+    const h = Math.floor(m/60);
+    if(h < 48) return `${h}h ago`;
+    const days = Math.floor(h/24);
+    return `${days}d ago`;
+  }
+
+  function firstEventTs(events, status){
+    if(!events) return null;
+    for(const e of events){
+      if(e && e.status === status) return e.created_at;
+    }
+    return null;
+  }
+
+  function renderTimeline(j){
+    const el = document.getElementById('timeline');
+    if(!el) return;
+    const steps = [
+      {key:'PLACED', label:'Order placed', ts: j.order ? j.order.created_at : null},
+      {key:'DROPOFF', label:'Buyer destination captured', ts: j.dropoff ? j.dropoff.created_at : null},
+      {key:'PICKUP', label:'Farmer pickup shared', ts: j.origin ? j.origin.created_at : null},
+      {key:'QUOTE_ACCEPTED', label:'Quote accepted', ts: firstEventTs(j.events, 'QUOTE_ACCEPTED')},
+      {key:'EN_ROUTE_TO_PICKUP', label:'Transporter en route to pickup', ts: firstEventTs(j.events, 'EN_ROUTE_TO_PICKUP')},
+      {key:'EN_ROUTE_TO_DROPOFF', label:'Picked up · en route to buyer', ts: firstEventTs(j.events, 'EN_ROUTE_TO_DROPOFF')},
+      {key:'DELIVERED', label:'Delivered', ts: firstEventTs(j.events, 'DELIVERED')}
+    ];
+
+    // current status to highlight progress
+    const status = (j.order && j.order.status) ? j.order.status : orderStatus;
+
+    const rank = {
+      'WAITING_FARMER_LOCATION': 1,
+      'NEEDS_QUOTES': 2,
+      'QUOTE_ACCEPTED': 3,
+      'EN_ROUTE_TO_PICKUP': 4,
+      'EN_ROUTE_TO_DROPOFF': 5,
+      'DELIVERED': 6
+    };
+    const currentRank = rank[status] || 0;
+
+    el.innerHTML = '';
+    for(const s of steps){
+      const done = !!s.ts;
+      const item = document.createElement('div');
+      item.className = 'row space';
+      const left = document.createElement('div');
+      left.innerHTML = `<div class="strong">${s.label}</div><div class="muted small">${s.ts ? s.ts : 'Pending'}</div>`;
+      const right = document.createElement('div');
+      const pill = document.createElement('span');
+      pill.className = 'pill';
+      if(done) pill.textContent = 'Done';
+      else {
+        // best-effort progress highlight
+        const sRank = rank[s.key] || 0;
+        pill.textContent = (sRank && currentRank >= sRank) ? 'In progress' : 'Pending';
+      }
+      right.appendChild(pill);
+      item.appendChild(left);
+      item.appendChild(right);
+      el.appendChild(item);
+      const hr = document.createElement('div');
+      hr.className = 'line';
+      hr.style.margin = '10px 0';
+      el.appendChild(hr);
+    }
+
+    // last transporter ping
+    const lastEl = document.getElementById('lastUpdated');
+    if(lastEl){
+      lastEl.textContent = j.transporter ? `${j.transporter.created_at} · ${ago(j.transporter.created_at)}` : '—';
+    }
+  }
+
   async function refresh(){
     try{
       const r = await fetch(`/api/order/${orderId}/track`, {headers:{'Accept':'application/json'}});
@@ -86,16 +190,48 @@
         document.getElementById('trackInfo').textContent = j.error || 'Not available';
         return;
       }
-      lastBuyer = j.buyer || null;
+      lastBuyer = j.dropoff || null;
       window.__lastOrigin = j.origin || null;
       setMarker('origin', j.origin);
-      setMarker('buyer', j.buyer);
+      setMarker('buyer', j.dropoff);
       setMarker('transporter', j.transporter);
+
+      // Route lines (approximate straight lines)
+      if(j.origin && j.dropoff){
+        const pts = [[j.origin.lat, j.origin.lng],[j.dropoff.lat, j.dropoff.lng]];
+        if(!routeLine){
+          routeLine = L.polyline(pts).addTo(map);
+        }else{
+          routeLine.setLatLngs(pts);
+        }
+      }
+      // Current leg: transporter -> next target
+      if(j.transporter){
+        let target = null;
+        const st = (j.order && j.order.status) ? j.order.status : orderStatus;
+        if(st === 'EN_ROUTE_TO_PICKUP' || st === 'QUOTE_ACCEPTED' || st === 'NEEDS_QUOTES' || st === 'WAITING_FARMER_LOCATION'){
+          target = j.origin;
+        }else{
+          target = j.dropoff;
+        }
+        if(target){
+          const pts2 = [[j.transporter.lat, j.transporter.lng],[target.lat, target.lng]];
+          if(!legLine){
+            legLine = L.polyline(pts2).addTo(map);
+          }else{
+            legLine.setLatLngs(pts2);
+          }
+        }
+      }
+
+      // Timeline + last updated badge
+      renderTimeline(j);
+
 
       // fit bounds when we have at least transporter
       const pts = [];
       if(j.origin) pts.push([j.origin.lat, j.origin.lng]);
-      if(j.buyer) pts.push([j.buyer.lat, j.buyer.lng]);
+      if(j.dropoff) pts.push([j.dropoff.lat, j.dropoff.lng]);
       if(j.transporter) pts.push([j.transporter.lat, j.transporter.lng]);
       if(pts.length){
         map.fitBounds(pts, {padding:[30,30]});
