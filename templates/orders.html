@@ -46,6 +46,24 @@
             {% endfor %}
           </ul>
 
+          {% if user.role == 'farmer' and o.status == 'PENDING_PICKUP' %}
+            <div class="spacer"></div>
+            <div class="muted small strong">Confirm pickup location (required before transporters can quote)</div>
+            <form method="post" action="/farmer/pickup" class="stack" style="max-width:520px;">
+              <input type="hidden" name="order_id" value="{{ o.id }}">
+              <label class="label">Pickup (farm / store / hub)</label>
+              <input id="pickupText-{{ o.id }}" name="origin" placeholder="e.g., Kuje Farm Gate" required>
+              <div class="row" style="justify-content:space-between;gap:10px;">
+                <button type="button" class="btn btn-ghost btnPickupGps" data-oid="{{ o.id }}">Use my current location</button>
+                <div class="muted small" id="pickupGpsStatus-{{ o.id }}"></div>
+              </div>
+              <input type="hidden" name="origin_lat" id="pickup_lat-{{ o.id }}">
+              <input type="hidden" name="origin_lng" id="pickup_lng-{{ o.id }}">
+              <input type="hidden" name="origin_accuracy" id="pickup_accuracy-{{ o.id }}">
+              <button class="btn btn-primary" type="submit">Confirm pickup</button>
+            </form>
+          {% endif %}
+
           <div class="spacer"></div>
 
           <div class="muted small strong">Transport quotes</div>
@@ -96,5 +114,44 @@
     <p class="muted">No orders yet.</p>
   {% endif %}
 </div>
+
+
+
+<script>
+(function(){
+  function bind(){
+    document.querySelectorAll('.btnPickupGps').forEach(btn => {
+      btn.addEventListener('click', function(){
+        const oid = btn.getAttribute('data-oid');
+        const statusEl = document.getElementById('pickupGpsStatus-' + oid);
+        const latEl = document.getElementById('pickup_lat-' + oid);
+        const lngEl = document.getElementById('pickup_lng-' + oid);
+        const accEl = document.getElementById('pickup_accuracy-' + oid);
+        const textEl = document.getElementById('pickupText-' + oid);
+
+        if(!navigator.geolocation){
+          statusEl.textContent = 'Geolocation not supported.';
+          return;
+        }
+        statusEl.textContent = 'Requesting permission…';
+        navigator.geolocation.getCurrentPosition(
+          function(p){
+            latEl.value = String(p.coords.latitude);
+            lngEl.value = String(p.coords.longitude);
+            accEl.value = String(p.coords.accuracy || '');
+            if(!textEl.value.trim()) textEl.value = 'Current Location';
+            statusEl.textContent = `Captured (±${Math.round(p.coords.accuracy||0)}m)`;
+          },
+          function(err){
+            statusEl.textContent = 'Location error: ' + err.message;
+          },
+          {enableHighAccuracy:true, maximumAge:60000, timeout:15000}
+        );
+      });
+    });
+  }
+  bind();
+})();
+</script>
 
 {% endblock %}

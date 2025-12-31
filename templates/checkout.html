@@ -50,19 +50,13 @@
 
   <div class="card">
     <h3>Place Order</h3>
-    <form method="post" action="/order/place" class="stack" id="orderForm">
-      <label class="label">Pickup (shared by farmer after you place the order)</label>
-      <input value="{% if farmer %}{{ farmer.hub or farmer.name or 'Farmer pickup' }}{% else %}Farmer pickup{% endif %}" readonly>
-      <div class="muted small" style="margin-top:6px;">
-        After you place the order, the farmer will share the exact pickup GPS for this order. Once shared, transporters will be notified and can quote accurately.
-      </div>
-
-      <label class="label">Destination (buyer drop-off)</label>
+    <form method="post" action="/order/place" class="stack">
+      <label class="label">Delivery location (drop-off)</label>
       <input id="destText" name="dest" placeholder="e.g., Wuse 2, Abuja" required>
 
-      <div class="row">
-        <button class="btn btn-light" type="button" id="btnDestGps">Use my current location (destination)</button>
-        <div class="muted small" id="destGpsStatus"></div>
+      <div class="row" style="justify-content:space-between;gap:10px;">
+        <button type="button" class="btn btn-ghost" id="btnUseGps">Use my current location</button>
+        <div class="muted small" id="gpsDestStatus"></div>
       </div>
 
       <input type="hidden" name="dest_lat" id="dest_lat">
@@ -72,75 +66,51 @@
       <button class="btn btn-primary" type="submit" {% if not items %}disabled{% endif %}>Place Order</button>
     </form>
 
-    <p class="muted small">GPS is required for delivery quoting and tracking. Please capture your destination GPS before placing the order.</p>
-
-    <script>
-    (function(){
-      function setStatus(el, msg){ el.textContent = msg || ''; }
-
-      async function pingDebug(payload){
-        try{
-          await fetch('/api/debug/location_ping', {
-            method: 'POST',
-            headers: {'Content-Type':'application/json'},
-            body: JSON.stringify(payload)
-          });
-        }catch(e){ /* ignore */ }
-      }
-
-      const statusEl = document.getElementById('destGpsStatus');
-
-      function insecureHint(){
-        // Geolocation generally requires a secure context (HTTPS), except on localhost.
-        if (typeof window.isSecureContext !== 'undefined' && !window.isSecureContext) {
-          return 'Location needs HTTPS. Open the https:// version of this site and try again.';
-        }
-        return '';
-      }
-
-      function capture(which){
-        if(!navigator.geolocation){
-          alert('Geolocation not supported on this browser.');
-          return;
-        }
-        const hint = insecureHint();
-        if (hint){
-          setStatus(statusEl, hint);
-          return;
-        }
-
-        setStatus(statusEl, 'Getting GPS…');
-
-        navigator.geolocation.getCurrentPosition(
-          function(p){
-            const lat = p.coords.latitude;
-            const lng = p.coords.longitude;
-            const acc = p.coords.accuracy;
-
-            document.getElementById(which + '_lat').value = String(lat);
-            document.getElementById(which + '_lng').value = String(lng);
-            document.getElementById(which + '_accuracy').value = String(acc || '');
-
-            setStatus(statusEl, `Captured: ${lat.toFixed(5)}, ${lng.toFixed(5)} (±${Math.round(acc||0)}m)`);
-
-            pingDebug({ role: 'buyer', page: 'checkout_destination', lat, lng, accuracy: acc });
-          },
-          function(err){
-            const code = err && typeof err.code !== 'undefined' ? err.code : '';
-            const msg = err && err.message ? err.message : 'Unknown error';
-            // Common codes: 1=PERMISSION_DENIED, 2=POSITION_UNAVAILABLE, 3=TIMEOUT
-            setStatus(statusEl, `GPS error${code ? ' ('+code+')' : ''}: ${msg}`);
-
-            pingDebug({ role: 'buyer', page: 'checkout_destination', error_code: code, error_message: msg });
-          },
-          {enableHighAccuracy:true, maximumAge:10000, timeout:15000}
-        );
-      }
-
-      document.getElementById('btnDestGps').addEventListener('click', function(){ capture('dest'); });
-    })();
-    </script>
+    <p class="muted small">After placing the order, the farmer must confirm pickup location. Then transporters can submit quotes.</p>
   </div>
 </div>
+
+
+<script>
+(function(){
+  const btn = document.getElementById('btnUseGps');
+  const statusEl = document.getElementById('gpsDestStatus');
+  const latEl = document.getElementById('dest_lat');
+  const lngEl = document.getElementById('dest_lng');
+  const accEl = document.getElementById('dest_accuracy');
+  const destText = document.getElementById('destText');
+
+  if(!btn) return;
+
+  btn.addEventListener('click', function(){
+    if(!navigator.geolocation){
+      statusEl.textContent = 'Geolocation not supported.';
+      return;
+    }
+    statusEl.textContent = 'Requesting permission…';
+    navigator.geolocation.getCurrentPosition(
+      function(p){
+        const lat = p.coords.latitude;
+        const lng = p.coords.longitude;
+        const acc = p.coords.accuracy;
+
+        latEl.value = String(lat);
+        lngEl.value = String(lng);
+        accEl.value = String(acc || '');
+
+        if(!destText.value.trim()){
+          destText.value = 'Current Location';
+        }
+
+        statusEl.textContent = `Captured (±${Math.round(acc||0)}m)`;
+      },
+      function(err){
+        statusEl.textContent = 'Location error: ' + err.message;
+      },
+      {enableHighAccuracy:true, maximumAge:60000, timeout:15000}
+    );
+  });
+})();
+</script>
 
 {% endblock %}
