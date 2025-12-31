@@ -78,6 +78,16 @@
     (function(){
       function setStatus(el, msg){ el.textContent = msg || ''; }
 
+      async function pingDebug(payload){
+        try{
+          await fetch('/api/debug/location_ping', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify(payload)
+          });
+        }catch(e){ /* ignore */ }
+      }
+
       const statusEl = document.getElementById('destGpsStatus');
 
       function insecureHint(){
@@ -112,12 +122,16 @@
             document.getElementById(which + '_accuracy').value = String(acc || '');
 
             setStatus(statusEl, `Captured: ${lat.toFixed(5)}, ${lng.toFixed(5)} (±${Math.round(acc||0)}m)`);
+
+            pingDebug({ role: 'buyer', page: 'checkout_destination', lat, lng, accuracy: acc });
           },
           function(err){
             const code = err && typeof err.code !== 'undefined' ? err.code : '';
             const msg = err && err.message ? err.message : 'Unknown error';
             // Common codes: 1=PERMISSION_DENIED, 2=POSITION_UNAVAILABLE, 3=TIMEOUT
             setStatus(statusEl, `GPS error${code ? ' ('+code+')' : ''}: ${msg}`);
+
+            pingDebug({ role: 'buyer', page: 'checkout_destination', error_code: code, error_message: msg });
           },
           {enableHighAccuracy:true, maximumAge:10000, timeout:15000}
         );

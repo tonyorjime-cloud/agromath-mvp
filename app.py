@@ -364,6 +364,22 @@ def ensure_schema_sqlite() -> None:
         )
     """)
 
+    # Debug pings for browser GPS troubleshooting (helps confirm whether GPS is working client-side)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS debug_location_pings(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            role TEXT,
+            page TEXT,
+            lat REAL,
+            lng REAL,
+            accuracy REAL,
+            user_agent TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+    """)
+
     # Lightweight migrations for older dbs
     tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
     if "users" in tables:
@@ -496,6 +512,31 @@ def ensure_schema_postgres() -> None:
                     order_id TEXT NOT NULL REFERENCES orders(id),
                     sender_user_id INTEGER NOT NULL REFERENCES users(id),
                     message TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+            """)
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS order_status_events(
+                    id SERIAL PRIMARY KEY,
+                    order_id TEXT NOT NULL REFERENCES orders(id),
+                    status TEXT NOT NULL,
+                    actor_user_id INTEGER REFERENCES users(id),
+                    actor_role TEXT,
+                    created_at TEXT NOT NULL
+                );
+            """)
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS debug_location_pings(
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER REFERENCES users(id),
+                    role TEXT,
+                    page TEXT,
+                    lat DOUBLE PRECISION,
+                    lng DOUBLE PRECISION,
+                    accuracy DOUBLE PRECISION,
+                    user_agent TEXT,
                     created_at TEXT NOT NULL
                 );
             """)
@@ -800,6 +841,44 @@ def api_notifications():
 
     latest_id = items[-1]["id"] if items else since
     return jsonify({"latest_id": latest_id, "items": items})
+
+
+@app.post("/api/debug/location_ping")
+@login_required
+def api_debug_location_ping():
+    """Store a lightweight GPS ping for troubleshooting.
+
+    Purpose: when GPS succeeds/fails on the client, we log a ping so that Render logs / DB confirm
+    whether location capture is working in the real environment.
+    """
+    u = current_user()
+    data = request.get_json(silent=True) or {}
+    role = (data.get("role") or _row_get(u, "role") or "").strip()[:32]
+    page = (data.get("page") or "").strip()[:120]
+
+    def _f(x):
+        try:
+            return float(x)
+        except Exception:
+            return None
+
+    lat = _f(data.get("lat"))
+    lng = _f(data.get("lng"))
+    acc = _f(data.get("accuracy"))
+    ua = (request.headers.get("User-Agent") or "").strip()[:240]
+
+    # Store even if lat/lng are missing (this helps diagnose permission denials/timeouts).
+    try:
+        db_execute(
+            f"INSERT INTO debug_location_pings(user_id, role, page, lat, lng, accuracy, user_agent, created_at) VALUES ({_ph()}, {_ph()}, {_ph()}, {_ph()}, {_ph()}, {_ph()}, {_ph()}, {_ph()})",
+            (int(u["id"]) if u else None, role, page, lat, lng, acc, ua, now_str()),
+        )
+        db_commit()
+    except Exception:
+        # Never break the app due to debug logging.
+        pass
+
+    return jsonify({"ok": True})
 
 
 # -----------------------------

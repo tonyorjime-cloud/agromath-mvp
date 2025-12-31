@@ -43,6 +43,16 @@
 
   function setStatus(msg){ statusEl.textContent = msg || ''; }
 
+  async function pingDebug(payload){
+    try{
+      await fetch('/api/debug/location_ping', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(payload)
+      });
+    }catch(e){ /* ignore */ }
+  }
+
   function insecureHint(){
     if (typeof window.isSecureContext !== 'undefined' && !window.isSecureContext) {
       return 'Location needs HTTPS. Open the https:// version of this site and try again.';
@@ -72,11 +82,15 @@
         document.getElementById('pickup_accuracy').value = String(acc || '');
 
         setStatus(`Captured: ${lat.toFixed(5)}, ${lng.toFixed(5)} (±${Math.round(acc||0)}m)`);
+
+        pingDebug({ role: 'farmer', page: 'farmer_pickup_share', lat, lng, accuracy: acc });
       },
       function(err){
         const code = (err && typeof err.code !== 'undefined') ? err.code : '';
         const msg = (err && err.message) ? err.message : 'Unknown error';
         setStatus(`GPS error${code ? ' ('+code+')' : ''}: ${msg}`);
+
+        pingDebug({ role: 'farmer', page: 'farmer_pickup_share', error_code: code, error_message: msg });
       },
       {enableHighAccuracy:true, maximumAge:10000, timeout:15000}
     );

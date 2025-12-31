@@ -53,6 +53,7 @@
         <button class="btn btn-light" type="button" onclick="setNearMe()">Use my current location</button>
         <button class="btn btn-ghost" type="button" onclick="clearNearMe()" {% if not has_buyer_loc %}disabled{% endif %}>Clear</button>
       </div>
+      <div class="muted small" id="nearMeStatus" style="margin-top:6px;"></div>
       <div class="muted small" style="margin-top:6px;">
         {% if has_buyer_loc %}
           Location set. Nearest/radius filters will work.
@@ -110,15 +111,33 @@
 </div>
 
 <script>
+async function pingDebug(payload){
+  try{
+    await fetch('/api/debug/location_ping', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
+  }catch(e){ /* ignore */ }
+}
+
+function setNearMeStatus(msg){
+  const el = document.getElementById('nearMeStatus');
+  if(el) el.textContent = msg || '';
+}
+
 async function setNearMe() {
   if (!navigator.geolocation) {
-    alert("Geolocation is not supported on this device/browser.");
+    setNearMeStatus("Geolocation is not supported on this device/browser.");
+    pingDebug({ role:'buyer', page:'buyer_near_me', error_message:'geolocation_not_supported' });
     return;
   }
   if (typeof window.isSecureContext !== 'undefined' && !window.isSecureContext) {
-    alert("Location requires HTTPS. Please open the https:// version of this site and try again.");
+    setNearMeStatus("Location requires HTTPS. Please open the https:// version of this site and try again.");
+    pingDebug({ role:'buyer', page:'buyer_near_me', error_message:'insecure_context' });
     return;
   }
+  setNearMeStatus('Getting GPS…');
   navigator.geolocation.getCurrentPosition(async (pos) => {
     const payload = { lat: pos.coords.latitude, lng: pos.coords.longitude };
     try {
@@ -129,15 +148,19 @@ async function setNearMe() {
       });
       const data = await res.json();
       if (!data.ok) throw new Error(data.error || "Unable to set location.");
+      setNearMeStatus(`Captured: ${payload.lat.toFixed(5)}, ${payload.lng.toFixed(5)}`);
+      pingDebug({ role:'buyer', page:'buyer_near_me', lat: payload.lat, lng: payload.lng, accuracy: pos.coords.accuracy });
       // Refresh to apply nearest/radius
       window.location.reload();
     } catch (e) {
-      alert(e.message || "Unable to set location.");
+      setNearMeStatus(e.message || "Unable to set location.");
+      pingDebug({ role:'buyer', page:'buyer_near_me', error_message: (e && e.message) ? e.message : 'unable_to_set_location' });
     }
   }, (err) => {
     const code = err && typeof err.code !== 'undefined' ? err.code : '';
     const msg = err && err.message ? err.message : 'Unknown error';
-    alert(`Unable to read location${code ? ' ('+code+')' : ''}: ${msg}. Please enable location permission and try again.`);
+    setNearMeStatus(`GPS error${code ? ' ('+code+')' : ''}: ${msg}`);
+    pingDebug({ role:'buyer', page:'buyer_near_me', error_code: code, error_message: msg });
   }, { enableHighAccuracy: true, timeout: 15000 });
 }
 
@@ -146,9 +169,12 @@ async function clearNearMe() {
     const res = await fetch("/buyer/location/clear", { method: "POST" });
     const data = await res.json();
     if (!data.ok) throw new Error("Unable to clear location.");
+    setNearMeStatus('Cleared.');
+    pingDebug({ role:'buyer', page:'buyer_near_me_clear' });
     window.location.reload();
   } catch (e) {
-    alert("Unable to clear location.");
+    setNearMeStatus("Unable to clear location.");
+    pingDebug({ role:'buyer', page:'buyer_near_me_clear', error_message:'unable_to_clear' });
   }
 }
 </script>
