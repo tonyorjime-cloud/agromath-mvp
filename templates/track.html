@@ -8,7 +8,8 @@
   <div class="pillrow">
     <a class="btn btn-ghost" href="/orders">Back to Orders</a>
     {% if user.role == 'transporter' %}
-      <button class="btn btn-primary" id="navBtn" type="button">Navigate to Buyer</button>
+      <button class="btn btn-light" id="navPickupBtn" type="button">Navigate to Pickup</button>
+      <button class="btn btn-primary" id="navDropoffBtn" type="button">Navigate to Buyer</button>
     {% endif %}
   </div>
 </div>
@@ -51,6 +52,7 @@
 (function(){
   const orderId = "{{ order_id }}";
   const role = "{{ user.role }}";
+  const orderStatus = "{{ status }}";
   let lastBuyer = null;
 
   // map init (Abuja-ish default)
@@ -85,6 +87,7 @@
         return;
       }
       lastBuyer = j.buyer || null;
+      window.__lastOrigin = j.origin || null;
       setMarker('origin', j.origin);
       setMarker('buyer', j.buyer);
       setMarker('transporter', j.transporter);
@@ -107,19 +110,48 @@
   refresh();
   setInterval(refresh, 10000); // 10s poll
 
-  // One-tap Google Maps navigation to buyer drop-off.
+  // Navigation gating: drop-off navigation becomes primary after pickup is confirmed.
   if(role === 'transporter'){
-    const navBtn = document.getElementById('navBtn');
-    if(navBtn){
-      navBtn.addEventListener('click', function(){
+    const dropBtn = document.getElementById('navDropoffBtn');
+    if(dropBtn){
+      if(orderStatus === 'EN_ROUTE_TO_PICKUP' || orderStatus === 'QUOTE_ACCEPTED'){
+        dropBtn.classList.add('btn-light');
+        dropBtn.classList.remove('btn-primary');
+      }
+    }
+  }
+
+  // One-tap Google Maps navigation (pickup first, then drop-off).
+  if(role === 'transporter'){
+    const pickupBtn = document.getElementById('navPickupBtn');
+    const dropBtn = document.getElementById('navDropoffBtn');
+
+    function openDir(dest){
+      const url = `https://www.google.com/maps/dir/?api=1&destination=${dest.lat},${dest.lng}&travelmode=driving`;
+      window.open(url, '_blank');
+    }
+
+    if(pickupBtn){
+      pickupBtn.addEventListener('click', function(){
+        // pickup = origin
+        if(!window.__lastOrigin){
+          alert('Pickup GPS not available yet.');
+          return;
+        }
+        openDir(window.__lastOrigin);
+      });
+    }
+
+    if(dropBtn){
+      dropBtn.addEventListener('click', function(){
         if(!lastBuyer){
           alert('Buyer destination GPS not available yet.');
           return;
         }
-        const url = `https://www.google.com/maps/dir/?api=1&destination=${lastBuyer.lat},${lastBuyer.lng}&travelmode=driving`;
-        window.open(url, '_blank');
+        openDir(lastBuyer);
       });
     }
+  }
 
   // If transporter, hook up GPS buttons using browser geolocation.
   if(role === 'transporter'){

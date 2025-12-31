@@ -4,7 +4,7 @@
 <div class="row space">
   <div>
     <h2>Transporter Dashboard</h2>
-    <div class="muted">Quote open orders. After acceptance: Start trip → Arrived → Delivered. Use Track for navigation.</div>
+    <div class="muted">Quote open orders. After acceptance: Start trip → Picked up → Delivered. Use Track for navigation.</div>
   </div>
   <div class="pillrow">
     <a class="btn btn-ghost" href="/orders">Orders</a>
@@ -73,14 +73,14 @@
               {% if o.status == 'QUOTE_ACCEPTED' %}
                 <form method="post" action="/transport/start" class="inline">
                   <input type="hidden" name="order_id" value="{{ o.id }}">
-                  <button class="btn btn-primary" type="submit">Start Trip</button>
+                  <button class="btn btn-primary" type="submit">Start Trip (to pickup)</button>
                 </form>
-              {% elif o.status == 'IN_TRANSIT' %}
-                <form method="post" action="/transport/arrive" class="inline">
+              {% elif o.status == 'EN_ROUTE_TO_PICKUP' %}
+                <form method="post" action="/transport/pickedup" class="inline">
                   <input type="hidden" name="order_id" value="{{ o.id }}">
-                  <button class="btn btn-primary" type="submit">Mark Arrived</button>
+                  <button class="btn btn-primary" type="submit">Picked Up (go to buyer)</button>
                 </form>
-              {% elif o.status == 'ARRIVED' %}
+              {% elif o.status == 'EN_ROUTE_TO_DROPOFF' %}
                 <form method="post" action="/transport/deliver" class="inline">
                   <input type="hidden" name="order_id" value="{{ o.id }}">
                   <button class="btn btn-primary" type="submit">Mark Delivered</button>

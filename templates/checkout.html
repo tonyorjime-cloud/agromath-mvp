@@ -51,21 +51,11 @@
   <div class="card">
     <h3>Place Order</h3>
     <form method="post" action="/order/place" class="stack" id="orderForm">
-      <label class="label">Pickup (set by farmer)</label>
+      <label class="label">Pickup (shared by farmer after you place the order)</label>
       <input value="{% if farmer %}{{ farmer.hub or farmer.name or 'Farmer pickup' }}{% else %}Farmer pickup{% endif %}" readonly>
-
-      {% if farmer and farmer.hub_lat and farmer.hub_lng %}
-        <div class="muted small" style="margin-top:6px;">
-          Farmer GPS pickup: {{ farmer.hub_lat }}, {{ farmer.hub_lng }}{% if farmer.hub_accuracy %} (±{{ farmer.hub_accuracy }}m){% endif %}
-          • <a class="link" target="_blank" rel="noopener" href="https://www.google.com/maps?q={{ farmer.hub_lat }},{{ farmer.hub_lng }}">View on map</a>
-        </div>
-      {% else %}
-        <div class="muted small" style="margin-top:6px;">
-          Farmer pickup GPS not set yet. Distance-based quoting will be limited until the farmer saves pickup GPS in Profile.
-        </div>
-      {% endif %}
-
-      <div class="muted small">The buyer does not set pickup. Farmers define pickup in their Profile (Hub / Location + GPS).</div>
+      <div class="muted small" style="margin-top:6px;">
+        After you place the order, the farmer will share the exact pickup GPS for this order. Once shared, transporters will be notified and can quote accurately.
+      </div>
 
       <label class="label">Destination (buyer drop-off)</label>
       <input id="destText" name="dest" placeholder="e.g., Wuse 2, Abuja" required>
@@ -82,7 +72,7 @@
       <button class="btn btn-primary" type="submit" {% if not items %}disabled{% endif %}>Place Order</button>
     </form>
 
-    <p class="muted small">Tip: GPS is optional, but if you capture it, the transporter gets one-tap navigation to your destination.</p>
+    <p class="muted small">GPS is required for delivery quoting and tracking. Please capture your destination GPS before placing the order.</p>
 
     <script>
     (function(){

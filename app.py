@@ -8,8 +8,14 @@ from datetime import datetime, timedelta
 from functools import wraps
 from typing import Any, Dict, Optional
 
-import psycopg2
-import psycopg2.extras
+# Postgres driver is optional in local/dev; Render images typically have it installed.
+try:
+    import psycopg2  # type: ignore
+    import psycopg2.extras  # type: ignore
+    _PSYCOPG2_OK = True
+except Exception:
+    psycopg2 = None  # type: ignore
+    _PSYCOPG2_OK = False
 
 from flask import Flask, g, redirect, render_template, request, session, url_for, flash, jsonify, abort
 
@@ -20,7 +26,7 @@ DB_NAME = os.environ.get("AGROMATH_DB", "agromath.db")
 
 # Postgres (Render)
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
-USE_POSTGRES = bool(DATABASE_URL)
+USE_POSTGRES = bool(DATABASE_URL) and _PSYCOPG2_OK
 
 # Admin (can approve farmer registrations)
 ADMIN_PHONE = os.environ.get("AGROMATH_ADMIN_PHONE", "09066454125")
@@ -39,6 +45,8 @@ app = Flask(__name__)
 # Basic structured logging (works on Render)
 logging.basicConfig(level=os.environ.get("LOG_LEVEL","INFO"))
 logger = logging.getLogger("agromath")
+if bool(DATABASE_URL) and not _PSYCOPG2_OK:
+    logger.warning("DATABASE_URL is set but psycopg2 is not installed; falling back to SQLite.")
 # IMPORTANT: On Render set a stable SECRET_KEY env var (do not rely on dev default)
 app.secret_key = os.environ.get("SECRET_KEY") or "dev-CHANGE-ME"
 
@@ -1391,15 +1399,35 @@ def make_order_id() -> str:
 @login_required
 @role_required("buyer")
 def order_place():
-    # Buyer provides ONLY the delivery destination. Pickup/origin is defined by the farmer.
+    """Buyer places an order after capturing drop-off GPS.
+
+    New flow:
+      1) Buyer MUST capture destination GPS before placing the order.
+      2) Order is created in WAITING_FARMER_LOCATION.
+      3) Farmer is notified to share live pickup location for THIS order.
+      4) Once farmer shares, the order becomes NEEDS_QUOTES and transporters are notified.
+    """
     dest = (request.form.get("dest") or "").strip() or "Unknown"
 
-    # Optional browser GPS capture for delivery point
+    # Buyer MUST provide browser GPS for delivery point (drop-off) in this flow.
     dest_lat = (request.form.get("dest_lat") or "").strip()
     dest_lng = (request.form.get("dest_lng") or "").strip()
     dest_accuracy = (request.form.get("dest_accuracy") or "").strip()
 
-    cart = get_cart()
+    def _to_float(s):
+        try:
+            return float(s)
+        except Exception:
+            return None
+
+    d_lat = _to_float(dest_lat)
+    d_lng = _to_float(dest_lng)
+    d_acc = _to_float(dest_accuracy) if dest_accuracy else None
+
+    if d_lat is None or d_lng is None:
+        flash("Please capture your delivery GPS location before placing the order (Use my current location).", "error")
+        return redirect(url_for("checkout"))
+
     cart = get_cart()
     if not cart:
         flash("Cart is empty.", "error")
@@ -1418,8 +1446,7 @@ def order_place():
         flash("No valid items in cart.", "error")
         return redirect(url_for("buyer_dashboard"))
 
-
-    # Derive farmer pickup (origin) from the single farmer represented in the cart
+    # Enforce single-farmer checkout (single pickup point).
     farmer_ids_in_cart = sorted({int(by_id.get(str(pid))["farmer_user_id"]) for pid in cart.keys() if by_id.get(str(pid))})
     if not farmer_ids_in_cart:
         flash("Unable to determine farmer for this order.", "error")
@@ -1428,53 +1455,34 @@ def order_place():
         flash("This MVP supports one farmer per order (single pickup point). Please checkout items per farmer.", "error")
         return redirect(url_for("checkout"))
 
-    farmer_id = farmer_ids_in_cart[0]
+    farmer_id = int(farmer_ids_in_cart[0])
     farmer = db_fetchone(
-        f"SELECT id, name, hub, hub_lat, hub_lng, hub_accuracy FROM users WHERE id={_ph()}",
+        f"SELECT id, name, hub FROM users WHERE id={_ph()}",
         (farmer_id,),
     )
-    origin = (farmer.get("hub") if farmer else None) or (farmer.get("name") if farmer else None) or "Farmer pickup"
+
+    origin_text = (farmer.get("hub") if farmer else None) or (farmer.get("name") if farmer else None) or "Farmer pickup (pending)"
     oid = make_order_id()
+
+    # Create order in WAITING_FARMER_LOCATION
     db_execute(
         f"""
         INSERT INTO orders(id, buyer_user_id, origin, dest, status, created_at)
-        VALUES({_ph()}, {_ph()}, {_ph()}, {_ph()}, 'NEEDS_QUOTES', {_ph()})
+        VALUES({_ph()}, {_ph()}, {_ph()}, {_ph()}, 'WAITING_FARMER_LOCATION', {_ph()})
         """,
-        (oid, u["id"], origin, dest, now_str()),
+        (oid, u["id"], origin_text, dest, now_str()),
     )
 
-    # Persist farmer pickup coordinates (from farmer profile) and buyer dropoff coordinates (optional GPS at checkout)
-    def _to_float(s):
-        try:
-            return float(s)
-        except Exception:
-            return None
+    # Save buyer drop-off GPS immediately
+    db_execute(
+        f"""
+        INSERT INTO order_locations(order_id, user_id, role, lat, lng, accuracy, created_at)
+        VALUES({_ph()}, {_ph()}, 'dropoff', {_ph()}, {_ph()}, {_ph()}, {_ph()})
+        """,
+        (oid, int(u["id"]), float(d_lat), float(d_lng), d_acc, now_str()),
+    )
 
-    h_lat = _to_float(str(farmer.get("hub_lat"))) if farmer and farmer.get("hub_lat") is not None else None
-    h_lng = _to_float(str(farmer.get("hub_lng"))) if farmer and farmer.get("hub_lng") is not None else None
-    h_acc = _to_float(str(farmer.get("hub_accuracy"))) if farmer and farmer.get("hub_accuracy") is not None else None
-
-    d_lat = _to_float(dest_lat)
-    d_lng = _to_float(dest_lng)
-    d_acc = _to_float(dest_accuracy) if dest_accuracy else None
-
-    if h_lat is not None and h_lng is not None:
-        db_execute(
-            f"""
-            INSERT INTO order_locations(order_id, user_id, role, lat, lng, accuracy, created_at)
-            VALUES({_ph()}, {_ph()}, 'origin', {_ph()}, {_ph()}, {_ph()}, {_ph()})
-            """,
-            (oid, int(farmer_id), h_lat, h_lng, h_acc, now_str()),
-        )
-
-    if d_lat is not None and d_lng is not None:
-        db_execute(
-            f"""
-            INSERT INTO order_locations(order_id, user_id, role, lat, lng, accuracy, created_at)
-            VALUES({_ph()}, {_ph()}, 'dropoff', {_ph()}, {_ph()}, {_ph()}, {_ph()})
-            """,
-            (oid, int(u["id"]), d_lat, d_lng, d_acc, now_str()),
-        )
+    # Save order items
     for pid, qty in cart.items():
         pr = by_id.get(str(pid))
         if not pr:
@@ -1489,19 +1497,13 @@ def order_place():
 
     db_commit()
 
-    # Phase-1 in-app notifications
-    # Notify all active transporters that a new order needs quotes
-    for tr in db_fetchall("SELECT id FROM users WHERE role='transporter' AND is_active=1"):
-        notify_user(tr["id"], "NEW_ORDER", f"New order {oid} needs transport quotes.")
-
-    # Notify any farmers whose products are in the order
-    farmer_ids = sorted({by_id.get(str(pid), {}).get("farmer_user_id") for pid in cart.keys() if by_id.get(str(pid))})
-    for fid in [x for x in farmer_ids if x]:
-        notify_user(int(fid), "NEW_ORDER", f"New order {oid} includes your products.")
+    # Notify the farmer to share pickup location for this specific order.
+    notify_user(int(farmer_id), "PICKUP_REQUEST", f"Order {oid} placed. Please share your pickup location so transporters can quote.", link=f"/farmer/order/{oid}/pickup")
 
     set_cart({})
-    flash(f"Order {oid} placed. Waiting for transporter quotes.", "ok")
+    flash(f"Order {oid} placed. Waiting for farmer to share pickup location.", "ok")
     return redirect(url_for("orders"))
+
 
 @app.get("/orders")
 @login_required
@@ -1665,6 +1667,115 @@ def farmer_dashboard():
 
     return render_template("farmer_dashboard.html", user=u, products=products, orders=my_orders)
 
+
+@app.get("/farmer/order/<order_id>/pickup")
+@login_required
+@role_required("farmer")
+def farmer_share_pickup_get(order_id: str):
+    """Farmer shares LIVE pickup location for a specific order.
+
+    This unblocks transporter quoting (status -> NEEDS_QUOTES).
+    """
+    u = current_user()
+    assert u is not None
+
+    # Ensure this order contains the farmer's products
+    ok = db_fetchone(
+        f"""
+        SELECT o.id
+        FROM orders o
+        JOIN order_items oi ON oi.order_id=o.id
+        JOIN products p ON p.id=oi.product_id
+        WHERE o.id={_ph()} AND p.farmer_user_id={_ph()}
+        LIMIT 1
+        """,
+        (order_id, u["id"]),
+    )
+    if not ok:
+        flash("Order not found or not yours.", "error")
+        return redirect(url_for("farmer_dashboard"))
+
+    o = db_fetchone(f"SELECT * FROM orders WHERE id={_ph()}", (order_id,))
+    if not o:
+        flash("Order not found.", "error")
+        return redirect(url_for("farmer_dashboard"))
+
+    return render_template("farmer_pickup_share.html", user=u, order=o)
+
+
+@app.post("/farmer/order/<order_id>/pickup")
+@login_required
+@role_required("farmer")
+def farmer_share_pickup_post(order_id: str):
+    u = current_user()
+    assert u is not None
+
+    # Ensure this order contains the farmer's products
+    ok = db_fetchone(
+        f"""
+        SELECT o.id
+        FROM orders o
+        JOIN order_items oi ON oi.order_id=o.id
+        JOIN products p ON p.id=oi.product_id
+        WHERE o.id={_ph()} AND p.farmer_user_id={_ph()}
+        LIMIT 1
+        """,
+        (order_id, u["id"]),
+    )
+    if not ok:
+        flash("Order not found or not yours.", "error")
+        return redirect(url_for("farmer_dashboard"))
+
+    # Only allow sharing when waiting for pickup, or when re-sharing to update
+    o = db_fetchone(f"SELECT * FROM orders WHERE id={_ph()}", (order_id,))
+    if not o:
+        flash("Order not found.", "error")
+        return redirect(url_for("farmer_dashboard"))
+
+    lat = (request.form.get("pickup_lat") or "").strip()
+    lng = (request.form.get("pickup_lng") or "").strip()
+    acc = (request.form.get("pickup_accuracy") or "").strip()
+
+    def _to_float(s):
+        try:
+            return float(s)
+        except Exception:
+            return None
+
+    p_lat = _to_float(lat)
+    p_lng = _to_float(lng)
+    p_acc = _to_float(acc) if acc else None
+
+    if p_lat is None or p_lng is None:
+        flash("Please capture your pickup GPS location first.", "error")
+        return redirect(url_for("farmer_share_pickup_get", order_id=order_id))
+
+    # Save origin point for this order (role=origin). This is the authoritative pickup point.
+    db_execute(
+        f"""
+        INSERT INTO order_locations(order_id, user_id, role, lat, lng, accuracy, created_at)
+        VALUES({_ph()}, {_ph()}, 'origin', {_ph()}, {_ph()}, {_ph()}, {_ph()})
+        """,
+        (order_id, int(u["id"]), float(p_lat), float(p_lng), p_acc, now_str()),
+    )
+
+    # If order was waiting for pickup, unlock quoting.
+    if _row_get(o, "status") == "WAITING_FARMER_LOCATION":
+        db_execute(f"UPDATE orders SET status='NEEDS_QUOTES' WHERE id={_ph()}", (order_id,))
+    db_commit()
+
+    # Notify buyer that pickup is now available and transporters will be invited.
+    buyer = db_fetchone(f"SELECT buyer_user_id FROM orders WHERE id={_ph()}", (order_id,))
+    if buyer:
+        notify_user(int(buyer["buyer_user_id"]), "PICKUP_SHARED", f"Farmer shared pickup location for order {order_id}. Transporters can now quote.", link=f"/orders")
+
+    # Notify all active transporters that a new order needs quotes (now that we have both locations).
+    for tr in db_fetchall("SELECT id FROM users WHERE role='transporter' AND is_active=1"):
+        notify_user(int(tr["id"]), "NEW_ORDER", f"New order {order_id} needs transport quotes.", link=f"/transport")
+
+    flash("Pickup location shared. Transporters can now quote.", "ok")
+    return redirect(url_for("farmer_dashboard"))
+
 @app.post("/farmer/product/add")
 @login_required
 @role_required("farmer")
@@ -1748,7 +1859,7 @@ def transporter_dashboard():
         SELECT o.*, q.price, q.eta_hours, q.id AS quote_id
         FROM orders o
         JOIN quotes q ON q.id=o.accepted_quote_id
-        WHERE q.transporter_user_id={_ph()} AND o.status IN ('QUOTE_ACCEPTED','IN_TRANSIT','ARRIVED')
+        WHERE q.transporter_user_id={_ph()} AND o.status IN ('QUOTE_ACCEPTED','EN_ROUTE_TO_PICKUP','EN_ROUTE_TO_DROPOFF')
         ORDER BY o.created_at DESC
     """, (u["id"],))
 
@@ -1803,10 +1914,7 @@ def transport_quote():
 @login_required
 @role_required("transporter")
 def transport_start_trip():
-    """
-    Transition order from QUOTE_ACCEPTED -> IN_TRANSIT.
-    Only the accepted transporter may do this.
-    """
+    """Transition order from QUOTE_ACCEPTED -> EN_ROUTE_TO_PICKUP."""
     order_id = request.form.get("order_id")
     u = current_user()
     if not u:
@@ -1828,45 +1936,40 @@ def transport_start_trip():
         flash("You are not assigned to this order.", "error")
         return redirect(url_for("transporter_dashboard"))
 
-    db_execute(f"UPDATE orders SET status='IN_TRANSIT' WHERE id={_ph()}", (order_id,))
+    db_execute(f"UPDATE orders SET status='EN_ROUTE_TO_PICKUP' WHERE id={_ph()}", (order_id,))
     db_commit()
 
-    logger.info("order_in_transit order_id=%s transporter_id=%s", order_id, u["id"])
+    logger.info("order_en_route_to_pickup order_id=%s transporter_id=%s", order_id, u["id"])
 
-    # Notifications
     buyer = db_fetchone(f"SELECT buyer_user_id FROM orders WHERE id={_ph()}", (order_id,))
     if buyer:
-        notify_user(int(buyer["buyer_user_id"]), "IN_TRANSIT", f"Delivery started for order {order_id}.", link=f"/track/{order_id}")
-
+        notify_user(int(buyer["buyer_user_id"]), "STATUS", f"Transporter is on the way to pickup for order {order_id}.", link=f"/track/{order_id}")
     for fr in db_fetchall(
         f"SELECT DISTINCT p.farmer_user_id AS uid FROM order_items oi JOIN products p ON p.id=oi.product_id WHERE oi.order_id={_ph()}",
         (order_id,),
     ):
-        notify_user(int(fr["uid"]), "IN_TRANSIT", f"Delivery started for order {order_id}.", link=f"/track/{order_id}")
+        notify_user(int(fr["uid"]), "STATUS", f"Transporter is on the way to pickup for order {order_id}.", link=f"/track/{order_id}")
 
-    flash("Delivery started.", "ok")
+    flash("Status updated: en route to pickup.", "ok")
     return redirect(url_for("transporter_dashboard"))
 
 
-@app.post("/transport/arrive")
+@app.post("/transport/pickedup")
 @login_required
 @role_required("transporter")
-def transport_arrive():
-    """
-    Transition order from IN_TRANSIT -> ARRIVED.
-    Only the accepted transporter may do this.
-    """
+def transport_picked_up():
+    """Transition order from EN_ROUTE_TO_PICKUP -> EN_ROUTE_TO_DROPOFF."""
     order_id = request.form.get("order_id")
     u = current_user()
     if not u:
         return redirect(url_for("login"))
 
     o = db_fetchone(
-        f"SELECT * FROM orders WHERE id={_ph()} AND status='IN_TRANSIT'",
+        f"SELECT * FROM orders WHERE id={_ph()} AND status='EN_ROUTE_TO_PICKUP'",
         (order_id,),
     )
     if not o:
-        flash("Order not found / not in transit.", "error")
+        flash("Order not found / not en route to pickup.", "error")
         return redirect(url_for("transporter_dashboard"))
 
     q = db_fetchone(
@@ -1877,23 +1980,21 @@ def transport_arrive():
         flash("You are not assigned to this order.", "error")
         return redirect(url_for("transporter_dashboard"))
 
-    db_execute(f"UPDATE orders SET status='ARRIVED' WHERE id={_ph()}", (order_id,))
+    db_execute(f"UPDATE orders SET status='EN_ROUTE_TO_DROPOFF' WHERE id={_ph()}", (order_id,))
     db_commit()
 
-    logger.info("order_arrived order_id=%s transporter_id=%s", order_id, u["id"])
+    logger.info("order_en_route_to_dropoff order_id=%s transporter_id=%s", order_id, u["id"])
 
-    # Notifications
     buyer = db_fetchone(f"SELECT buyer_user_id FROM orders WHERE id={_ph()}", (order_id,))
     if buyer:
-        notify_user(int(buyer["buyer_user_id"]), "ARRIVED", f"Transporter arrived for order {order_id}.", link=f"/track/{order_id}")
-
+        notify_user(int(buyer["buyer_user_id"]), "STATUS", f"Pickup completed. Transporter is on the way to you for order {order_id}.", link=f"/track/{order_id}")
     for fr in db_fetchall(
         f"SELECT DISTINCT p.farmer_user_id AS uid FROM order_items oi JOIN products p ON p.id=oi.product_id WHERE oi.order_id={_ph()}",
         (order_id,),
     ):
-        notify_user(int(fr["uid"]), "ARRIVED", f"Transporter arrived for order {order_id}.", link=f"/track/{order_id}")
+        notify_user(int(fr["uid"]), "STATUS", f"Pickup completed for order {order_id}. Transporter is en route to buyer.", link=f"/track/{order_id}")
 
-    flash("Marked as arrived.", "ok")
+    flash("Status updated: picked up, en route to drop-off.", "ok")
     return redirect(url_for("transporter_dashboard"))
 
 
@@ -1901,18 +2002,44 @@ def transport_arrive():
 @login_required
 @role_required("transporter")
 def transport_deliver():
+    """Transition order from EN_ROUTE_TO_DROPOFF -> DELIVERED."""
     order_id = request.form.get("order_id")
     u = current_user()
     if not u:
         return redirect(url_for("login"))
 
     o = db_fetchone(
-        f"SELECT * FROM orders WHERE id={_ph()} AND status='ARRIVED'",
+        f"SELECT * FROM orders WHERE id={_ph()} AND status='EN_ROUTE_TO_DROPOFF'",
         (order_id,),
     )
     if not o:
-        flash("Order not found / not ready for delivery.", "error")
+        flash("Order not found / not en route to drop-off.", "error")
         return redirect(url_for("transporter_dashboard"))
+
+    q = db_fetchone(
+        f"SELECT * FROM quotes WHERE id={_ph()} AND transporter_user_id={_ph()}",
+        (o["accepted_quote_id"], u["id"]),
+    )
+    if not q or q["status"] != "ACCEPTED":
+        flash("You are not assigned to this order.", "error")
+        return redirect(url_for("transporter_dashboard"))
+
+    db_execute(f"UPDATE quotes SET status='DELIVERED' WHERE id={_ph()}", (q["id"],))
+    db_execute(f"UPDATE orders SET status='DELIVERED' WHERE id={_ph()}", (order_id,))
+    db_commit()
+
+    buyer = db_fetchone(f"SELECT buyer_user_id FROM orders WHERE id={_ph()}", (order_id,))
+    if buyer:
+        notify_user(int(buyer["buyer_user_id"]), "DELIVERED", f"Order {order_id} marked delivered.")
+    for fr in db_fetchall(
+        f"SELECT DISTINCT p.farmer_user_id AS uid FROM order_items oi JOIN products p ON p.id=oi.product_id WHERE oi.order_id={_ph()}",
+        (order_id,),
+    ):
+        notify_user(int(fr["uid"]), "DELIVERED", f"Order {order_id} has been delivered.")
+
+    flash("Order marked delivered.", "ok")
+    return redirect(url_for("transporter_dashboard"))
+
 
     q = db_fetchone(
         f"SELECT * FROM quotes WHERE id={_ph()} AND transporter_user_id={_ph()}",
