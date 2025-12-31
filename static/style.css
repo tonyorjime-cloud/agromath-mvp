@@ -243,3 +243,7 @@ input:focus, select:focus{border-color: rgba(91,140,255,.65)}
   margin-top:6px;
   white-space: pre-wrap;
 }
+
+
+.helpbar{margin:8px 0 0; padding:8px 12px; border:1px solid rgba(255,255,255,.10); border-radius:14px; color:var(--muted); font-size:13px;}
+.helpbar a{color:var(--text); text-decoration:underline;}

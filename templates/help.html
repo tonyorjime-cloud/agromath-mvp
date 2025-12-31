@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="row space">
+  <div>
+    <h2>AgroMath Help</h2>
+    <div class="muted">Quick, practical guide for buyers, farmers, and transporters.</div>
+  </div>
+  <div class="pillrow">
+    {% if session.get("uid") %}
+      <a class="btn btn-ghost" href="/dashboard">Dashboard</a>
+      <a class="btn btn-ghost" href="/orders">Orders</a>
+      <a class="btn btn-light" href="/profile">Profile</a>
+    {% else %}
+      <a class="btn btn-light" href="/login">Login</a>
+    {% endif %}
+  </div>
+</div>
+
+<div class="grid2">
+  <div class="card">
+    <h3>Buyer workflow</h3>
+    <ol class="list">
+      <li>Go to <b>Products</b> and add items to your cart.</li>
+      <li>Checkout: capture <b>Destination GPS</b> (recommended) for smooth delivery routing.</li>
+      <li>Wait for transporter quotes on <b>Orders</b>.</li>
+      <li>Accept one quote. This activates <b>Chat</b> and <b>Tracking</b>.</li>
+      <li>Use <b>Track</b> to monitor delivery and coordinate if needed.</li>
+    </ol>
+    <div class="muted small">Tip: If you skip Destination GPS, navigation falls back to your typed address and may be less accurate.</div>
+  </div>
+
+  <div class="card">
+    <h3>Transporter workflow</h3>
+    <ol class="list">
+      <li>Open <b>Transporter Dashboard</b> and quote open orders.</li>
+      <li>Once a buyer accepts your quote, the order appears under <b>Accepted orders</b>.</li>
+      <li>Use <b>Track</b> → then tap <b>Navigate</b> to open Google Maps directions.</li>
+      <li>Update status in sequence: <b>Start Trip</b> → <b>Arrived</b> → <b>Delivered</b>.</li>
+      <li>Keep the Track page open while sharing location for live updates.</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <h3>Farmer workflow</h3>
+    <ol class="list">
+      <li>Create and publish products on your <b>Farmer Dashboard</b>.</li>
+      <li>Watch the <b>Orders</b> page for orders containing your products.</li>
+      <li>Use <b>Chat</b> to coordinate packaging and pickup details.</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <h3>Notifications</h3>
+    <ul class="list">
+      <li>In-app notifications are delivered via polling and stored in the database.</li>
+      <li>If you miss something, check your <b>Orders</b> page—notifications always link you back to the right place.</li>
+    </ul>
+    <div class="muted small">Operational note: Notifications are persisted immediately on the backend to prevent silent drops.</div>
+  </div>
+</div>
+
+<div class="spacer"></div>
+
+<div class="card">
+  <h3>Troubleshooting</h3>
+  <ul class="list">
+    <li><b>GPS not working?</b> Ensure you’re using HTTPS and granted location permission. Use Chrome/Safari.</li>
+    <li><b>Tracking not updating?</b> The transporter must keep the Track screen open while sharing location.</li>
+    <li><b>Chat not available?</b> Chat activates after a quote is accepted for that order.</li>
+  </ul>
+</div>
+
+{% endblock %}

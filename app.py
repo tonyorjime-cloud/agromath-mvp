@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import logging
 import sqlite3
 import secrets
 from datetime import datetime, timedelta
@@ -28,6 +29,10 @@ ADMIN_PHONE = os.environ.get("AGROMATH_ADMIN_PHONE", "09066454125")
 OTP_TTL_MINUTES = 10
 
 app = Flask(__name__)
+
+# Basic structured logging (works on Render)
+logging.basicConfig(level=os.environ.get("LOG_LEVEL","INFO"))
+logger = logging.getLogger("agromath")
 # IMPORTANT: On Render set a stable SECRET_KEY env var (do not rely on dev default)
 app.secret_key = os.environ.get("SECRET_KEY") or "dev-CHANGE-ME"
 
@@ -155,7 +160,7 @@ def ensure_schema_sqlite() -> None:
             buyer_user_id INTEGER NOT NULL,
             origin TEXT NOT NULL,
             dest TEXT NOT NULL,
-            status TEXT NOT NULL, -- NEEDS_QUOTES|QUOTE_ACCEPTED|DELIVERED|CANCELLED
+            status TEXT NOT NULL, -- NEEDS_QUOTES|QUOTE_ACCEPTED|IN_TRANSIT|ARRIVED|DELIVERED|CANCELLED
             accepted_quote_id INTEGER,
             created_at TEXT NOT NULL,
             FOREIGN KEY(buyer_user_id) REFERENCES users(id),
@@ -755,6 +760,7 @@ def api_order_location(order_id: str):
         (order_id, int(u["id"]), lat, lng, acc, now_str()),
     )
     db_commit()
+    logger.info("location_ping order_id=%s transporter_id=%s", order_id, u["id"])
     return jsonify({"ok": True})
 
 
@@ -872,6 +878,38 @@ def api_order_send_message(order_id: str):
 # -----------------------------
 # Routes: profile + onboarding
 # -----------------------------
+
+
+@app.get("/help")
+def help_page():
+    # Public help page (no auth required)
+    return render_template("help.html", user=current_user())
+
+
+@app.get("/healthz")
+def healthz():
+    """
+    Lightweight health endpoint for Render / uptime checks.
+    Returns JSON only; no secrets.
+    """
+    try:
+        one = db_fetchone(f"SELECT 1 AS ok")
+        ok = bool(one and int(_row_get(one, "ok", 0)) == 1)
+
+        stats = {
+            "users": int(_row_get(db_fetchone("SELECT COUNT(*) AS c FROM users"), "c", 0)),
+            "orders": int(_row_get(db_fetchone("SELECT COUNT(*) AS c FROM orders"), "c", 0)),
+            "quotes": int(_row_get(db_fetchone("SELECT COUNT(*) AS c FROM quotes"), "c", 0)),
+            "notifications": int(_row_get(db_fetchone("SELECT COUNT(*) AS c FROM notifications"), "c", 0)),
+        }
+
+        return jsonify({"ok": ok, "stats": stats, "db": "postgres" if DB_URL else "sqlite"})
+    except Exception as e:
+        logger.exception("healthz_failed")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+
 
 @app.get("/profile")
 @login_required
@@ -1281,6 +1319,7 @@ def quote_accept():
     db_commit()
 
     # Notifications
+    logger.info("quote_accepted order_id=%s quote_id=%s buyer_id=%s", order_id, quote_id, u["id"])
     notify_user(int(q["transporter_user_id"]), "QUOTE_ACCEPTED", f"Your quote was accepted for order {order_id}.")
 
     declined = db_fetchall(
@@ -1428,7 +1467,7 @@ def transporter_dashboard():
         SELECT o.*, q.price, q.eta_hours, q.id AS quote_id
         FROM orders o
         JOIN quotes q ON q.id=o.accepted_quote_id
-        WHERE q.transporter_user_id={_ph()} AND o.status='QUOTE_ACCEPTED'
+        WHERE q.transporter_user_id={_ph()} AND o.status IN ('QUOTE_ACCEPTED','IN_TRANSIT','ARRIVED')
         ORDER BY o.created_at DESC
     """, (u["id"],))
 
@@ -1439,6 +1478,7 @@ def transporter_dashboard():
         my_quotes=my_quotes,
         accepted_orders=accepted_orders,
     )
+
 
 @app.post("/transport/quote")
 @login_required
@@ -1477,6 +1517,105 @@ def transport_quote():
     flash("Quote submitted.", "ok")
     return redirect(url_for("transporter_dashboard"))
 
+
+@app.post("/transport/start")
+@login_required
+@role_required("transporter")
+def transport_start_trip():
+    """
+    Transition order from QUOTE_ACCEPTED -> IN_TRANSIT.
+    Only the accepted transporter may do this.
+    """
+    order_id = request.form.get("order_id")
+    u = current_user()
+    if not u:
+        return redirect(url_for("login"))
+
+    o = db_fetchone(
+        f"SELECT * FROM orders WHERE id={_ph()} AND status='QUOTE_ACCEPTED'",
+        (order_id,),
+    )
+    if not o:
+        flash("Order not found / not ready to start.", "error")
+        return redirect(url_for("transporter_dashboard"))
+
+    q = db_fetchone(
+        f"SELECT * FROM quotes WHERE id={_ph()} AND transporter_user_id={_ph()}",
+        (o["accepted_quote_id"], u["id"]),
+    )
+    if not q or q["status"] != "ACCEPTED":
+        flash("You are not assigned to this order.", "error")
+        return redirect(url_for("transporter_dashboard"))
+
+    db_execute(f"UPDATE orders SET status='IN_TRANSIT' WHERE id={_ph()}", (order_id,))
+    db_commit()
+
+    logger.info("order_in_transit order_id=%s transporter_id=%s", order_id, u["id"])
+
+    # Notifications
+    buyer = db_fetchone(f"SELECT buyer_user_id FROM orders WHERE id={_ph()}", (order_id,))
+    if buyer:
+        notify_user(int(buyer["buyer_user_id"]), "IN_TRANSIT", f"Delivery started for order {order_id}.", link=f"/track/{order_id}")
+
+    for fr in db_fetchall(
+        f"SELECT DISTINCT p.farmer_user_id AS uid FROM order_items oi JOIN products p ON p.id=oi.product_id WHERE oi.order_id={_ph()}",
+        (order_id,),
+    ):
+        notify_user(int(fr["uid"]), "IN_TRANSIT", f"Delivery started for order {order_id}.", link=f"/track/{order_id}")
+
+    flash("Delivery started.", "ok")
+    return redirect(url_for("transporter_dashboard"))
+
+
+@app.post("/transport/arrive")
+@login_required
+@role_required("transporter")
+def transport_arrive():
+    """
+    Transition order from IN_TRANSIT -> ARRIVED.
+    Only the accepted transporter may do this.
+    """
+    order_id = request.form.get("order_id")
+    u = current_user()
+    if not u:
+        return redirect(url_for("login"))
+
+    o = db_fetchone(
+        f"SELECT * FROM orders WHERE id={_ph()} AND status='IN_TRANSIT'",
+        (order_id,),
+    )
+    if not o:
+        flash("Order not found / not in transit.", "error")
+        return redirect(url_for("transporter_dashboard"))
+
+    q = db_fetchone(
+        f"SELECT * FROM quotes WHERE id={_ph()} AND transporter_user_id={_ph()}",
+        (o["accepted_quote_id"], u["id"]),
+    )
+    if not q or q["status"] != "ACCEPTED":
+        flash("You are not assigned to this order.", "error")
+        return redirect(url_for("transporter_dashboard"))
+
+    db_execute(f"UPDATE orders SET status='ARRIVED' WHERE id={_ph()}", (order_id,))
+    db_commit()
+
+    logger.info("order_arrived order_id=%s transporter_id=%s", order_id, u["id"])
+
+    # Notifications
+    buyer = db_fetchone(f"SELECT buyer_user_id FROM orders WHERE id={_ph()}", (order_id,))
+    if buyer:
+        notify_user(int(buyer["buyer_user_id"]), "ARRIVED", f"Transporter arrived for order {order_id}.", link=f"/track/{order_id}")
+
+    for fr in db_fetchall(
+        f"SELECT DISTINCT p.farmer_user_id AS uid FROM order_items oi JOIN products p ON p.id=oi.product_id WHERE oi.order_id={_ph()}",
+        (order_id,),
+    ):
+        notify_user(int(fr["uid"]), "ARRIVED", f"Transporter arrived for order {order_id}.", link=f"/track/{order_id}")
+
+    flash("Marked as arrived.", "ok")
+    return redirect(url_for("transporter_dashboard"))
+
+
 @app.post("/transport/deliver")
 @login_required
 @role_required("transporter")
@@ -1487,7 +1626,7 @@ def transport_deliver():
         return redirect(url_for("login"))
 
     o = db_fetchone(
-        f"SELECT * FROM orders WHERE id={_ph()} AND status='QUOTE_ACCEPTED'",
+        f"SELECT * FROM orders WHERE id={_ph()} AND status='ARRIVED'",
         (order_id,),
     )
     if not o:
