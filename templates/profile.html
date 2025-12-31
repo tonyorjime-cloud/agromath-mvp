@@ -27,6 +27,24 @@
     <label class="label">Hub / Location (optional)</label>
     <input name="hub" placeholder="e.g., Makurdi, Jos, Abuja" value="{{ user.hub or '' }}">
 
+    {% if user and user.role == 'farmer' %}
+    <div class="card" style="margin-top:14px;">
+      <h3>Farmer Pickup Point (GPS)</h3>
+      <div class="muted small">This pickup point will be used as the order origin. Buyers will only set the delivery destination.</div>
+      <div class="row" style="gap:10px; flex-wrap:wrap;">
+        <button class="btn btn-light" type="button" id="btnHubGps">Set pickup to my current location</button>
+        <div class="muted small" id="hubGpsStatus"></div>
+      </div>
+      <input type="hidden" name="hub_lat" id="hub_lat" value="{{ user.hub_lat or '' }}">
+      <input type="hidden" name="hub_lng" id="hub_lng" value="{{ user.hub_lng or '' }}">
+      <input type="hidden" name="hub_accuracy" id="hub_accuracy" value="{{ user.hub_accuracy or '' }}">
+      {% if user.hub_lat and user.hub_lng %}
+        <div class="muted small">Saved: {{ user.hub_lat }}, {{ user.hub_lng }}{% if user.hub_accuracy %} (±{{ user.hub_accuracy }}m){% endif %}</div>
+      {% endif %}
+    </div>
+    {% endif %}
+
+
     <button class="btn btn-primary" type="submit">Save</button>
   </form>
 
@@ -35,5 +53,35 @@
     <a class="btn btn-dark" href="/admin">Admin approvals</a>
   {% endif %}
 </div>
+
+
+<script>
+(function(){
+  const btn = document.getElementById('btnHubGps');
+  if(!btn) return;
+  const statusEl = document.getElementById('hubGpsStatus');
+  const latEl = document.getElementById('hub_lat');
+  const lngEl = document.getElementById('hub_lng');
+  const accEl = document.getElementById('hub_accuracy');
+
+  function setStatus(msg){ if(statusEl) statusEl.textContent = msg; }
+
+  btn.addEventListener('click', function(){
+    if(!navigator.geolocation){
+      setStatus('Geolocation is not supported by your browser.');
+      return;
+    }
+    setStatus('Getting GPS…');
+    navigator.geolocation.getCurrentPosition(function(pos){
+      latEl.value = pos.coords.latitude;
+      lngEl.value = pos.coords.longitude;
+      accEl.value = pos.coords.accuracy || '';
+      setStatus('Pickup location captured. Click Save to store it.');
+    }, function(err){
+      setStatus('Unable to get location. Please enable location permissions and try again.');
+    }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
+  });
+})();
+</script>
 
 {% endblock %}

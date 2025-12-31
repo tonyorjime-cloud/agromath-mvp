@@ -23,6 +23,14 @@
               <div>
                 <div class="strong">{{ o.id }}</div>
                 <div class="muted small">{{ o.origin }} → {{ o.dest }} · {{ o.created_at }}</div>
+                {% if o.distance_km %}
+                  <div class="muted small">Distance: <b>{{ "%.1f"|format(o.distance_km) }} km</b></div>
+                  {% if o.suggested %}
+                    <div class="muted small">Suggested ({{ o.suggested.band }}): <b>{{ money(o.suggested.low) }} – {{ money(o.suggested.high) }}</b> <span class="muted">(guidance)</span></div>
+                  {% endif %}
+                {% else %}
+                  <div class="muted small">Distance: <span class="muted">not available (farmer/buyer GPS missing)</span></div>
+                {% endif %}
                 <div class="muted small">Existing quotes: {{ o.quote_count }}</div>
               </div>
               <div class="status">{{ o.status }}</div>
