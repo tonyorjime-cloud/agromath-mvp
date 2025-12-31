@@ -51,10 +51,17 @@
   <div class="card">
     <h3>Place Order</h3>
     <form method="post" action="/order/place" class="stack" id="orderForm">
-      <label class="label">Pickup (set by farmer)</label>
-      <input value="{% if farmer %}{{ farmer.hub or farmer.name or 'Farmer pickup' }}{% else %}Farmer pickup{% endif %}" readonly>
+      <label class="label">Origin (pickup)</label>
+      <input id="originText" name="origin" placeholder="e.g., Makurdi Hub" required>
 
-      <div class="muted small">The buyer does not set pickup. Farmers define pickup in their Profile (Hub / Location + GPS).</div>
+      <div class="row">
+        <button class="btn btn-light" type="button" id="btnOriginGps">Use my current location (pickup)</button>
+        <div class="muted small" id="originGpsStatus"></div>
+      </div>
+
+      <input type="hidden" name="origin_lat" id="origin_lat">
+      <input type="hidden" name="origin_lng" id="origin_lng">
+      <input type="hidden" name="origin_accuracy" id="origin_accuracy">
 
       <label class="label">Destination (buyer drop-off)</label>
       <input id="destText" name="dest" placeholder="e.g., Wuse 2, Abuja" required>
@@ -82,6 +89,7 @@
           alert('Geolocation not supported on this browser.');
           return;
         }
+        const statusEl = document.getElementById(which === 'origin' ? 'originGpsStatus' : 'destGpsStatus');
         setStatus(statusEl, 'Getting GPS…');
 
         navigator.geolocation.getCurrentPosition(
@@ -103,6 +111,7 @@
         );
       }
 
+      document.getElementById('btnOriginGps').addEventListener('click', function(){ capture('origin'); });
       document.getElementById('btnDestGps').addEventListener('click', function(){ capture('dest'); });
     })();
     </script>

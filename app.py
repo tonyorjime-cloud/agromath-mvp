@@ -45,46 +45,6 @@ def now_str() -> str:
     # Keep same format so your string comparisons still work
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-
-def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Great-circle distance (km)."""
-    from math import radians, sin, cos, asin, sqrt
-    r = 6371.0
-    dlat = radians(lat2 - lat1)
-    dlon = radians(lon2 - lon1)
-    a = sin(dlat/2)**2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon/2)**2
-    c = 2 * asin(sqrt(a))
-    return r * c
-
-def order_distance_km(order_id: str) -> Optional[float]:
-    """Compute distance between latest origin and dropoff GPS points for an order."""
-    o = db_fetchone(
-        f"""
-        SELECT lat, lng
-        FROM order_locations
-        WHERE order_id={_ph()} AND role='origin'
-        ORDER BY id DESC
-        LIMIT 1
-        """,
-        (order_id,),
-    )
-    d = db_fetchone(
-        f"""
-        SELECT lat, lng
-        FROM order_locations
-        WHERE order_id={_ph()} AND role='dropoff'
-        ORDER BY id DESC
-        LIMIT 1
-        """,
-        (order_id,),
-    )
-    if not o or not d:
-        return None
-    try:
-        return float(haversine_km(float(o["lat"]), float(o["lng"]), float(d["lat"]), float(d["lng"])))
-    except Exception:
-        return None
-
 def _ph() -> str:
     """Return the placeholder token for the active DB driver."""
     return "%s" if USE_POSTGRES else "?"
@@ -165,22 +125,11 @@ def ensure_schema_sqlite() -> None:
             name TEXT,
             role TEXT, -- buyer|farmer|transporter
             hub TEXT,  -- optional: Makurdi, Jos, etc.
-            hub_lat REAL,
-            hub_lng REAL,
-            hub_accuracy REAL,
             is_active INTEGER NOT NULL DEFAULT 1,
             farmer_status TEXT NOT NULL DEFAULT 'NONE', -- NONE|PENDING|APPROVED|DECLINED
             created_at TEXT NOT NULL
         )
     """)
-    # --- lightweight migrations (SQLite) ---
-    # Add farmer pickup GPS columns if repo was started before these fields existed.
-    for col, typ in (("hub_lat", "REAL"), ("hub_lng", "REAL"), ("hub_accuracy", "REAL")):
-        try:
-            conn.execute(f"ALTER TABLE users ADD COLUMN {col} {typ}")
-        except Exception:
-            pass
-
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS otps(
@@ -318,17 +267,6 @@ def ensure_schema_postgres() -> None:
                     created_at TEXT NOT NULL
                 );
             """)
-            # --- lightweight migrations (Postgres) ---
-            for ddl in (
-                "ALTER TABLE users ADD COLUMN IF NOT EXISTS hub_lat DOUBLE PRECISION",
-                "ALTER TABLE users ADD COLUMN IF NOT EXISTS hub_lng DOUBLE PRECISION",
-                "ALTER TABLE users ADD COLUMN IF NOT EXISTS hub_accuracy DOUBLE PRECISION",
-            ):
-                try:
-                    cur.execute(ddl + ";")
-                except Exception:
-                    pass
-
 
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS otps(
@@ -985,9 +923,6 @@ def profile_post():
     name = (request.form.get("name") or "").strip()
     role = (request.form.get("role") or "").strip()
     hub = (request.form.get("hub") or "").strip()
-    hub_lat = (request.form.get("hub_lat") or "").strip()
-    hub_lng = (request.form.get("hub_lng") or "").strip()
-    hub_accuracy = (request.form.get("hub_accuracy") or "").strip()
 
     if role not in ("buyer", "farmer", "transporter"):
         flash("Please select a role.", "error")
@@ -1006,19 +941,9 @@ def profile_post():
     else:
         farmer_status = "NONE"
 
-    def _to_float(s: str) -> Optional[float]:
-        try:
-            return float(s)
-        except Exception:
-            return None
-
-    h_lat = _to_float(hub_lat) if hub_lat else None
-    h_lng = _to_float(hub_lng) if hub_lng else None
-    h_acc = _to_float(hub_accuracy) if hub_accuracy else None
-
     db_execute(
-        f"UPDATE users SET name={_ph()}, role={_ph()}, hub={_ph()}, hub_lat={_ph()}, hub_lng={_ph()}, hub_accuracy={_ph()}, farmer_status={_ph()} WHERE id={_ph()}",
-        (name, role, hub, h_lat, h_lng, h_acc, farmer_status, u["id"]),
+        f"UPDATE users SET name={_ph()}, role={_ph()}, hub={_ph()}, farmer_status={_ph()} WHERE id={_ph()}",
+        (name, role, hub, farmer_status, u["id"]),
     )
     db_commit()
 
@@ -1122,171 +1047,36 @@ def get_cart() -> Dict[str, int]:
 def set_cart(cart: Dict[str, int]) -> None:
     session["cart"] = cart
 
-
 @app.get("/buyer")
 @login_required
 @role_required("buyer")
 def buyer_dashboard():
-    # Search / filter parameters
-    q = (request.args.get("q") or "").strip()
-    sort = (request.args.get("sort") or "newest").strip().lower()
-    try:
-        radius_km = float((request.args.get("radius_km") or "").strip()) if request.args.get("radius_km") else None
-    except Exception:
-        radius_km = None
-
-    # Buyer browsing location (session-scoped)
-    buyer_lat = session.get("buyer_lat")
-    buyer_lng = session.get("buyer_lng")
-    has_buyer_loc = (buyer_lat is not None and buyer_lng is not None)
-
-    base_sql = f"""
-        SELECT p.*, u.name AS farmer_name, u.hub AS farmer_hub,
-               u.hub_lat AS farmer_hub_lat, u.hub_lng AS farmer_hub_lng, u.hub_accuracy AS farmer_hub_accuracy
+    products = db_fetchall("""
+        SELECT p.*, u.name AS farmer_name, u.hub AS farmer_hub
         FROM products p
         JOIN users u ON u.id = p.farmer_user_id
         WHERE p.is_active=1 AND u.role='farmer' AND u.farmer_status='APPROVED'
-    """
-
-    params: tuple = ()
-    if q:
-        # Search by product name (primary) and farmer name (secondary).
-        if USE_POSTGRES:
-            base_sql += f" AND (p.name ILIKE {_ph()} OR u.name ILIKE {_ph()})"
-            like = f"%{q}%"
-            params = (like, like)
-        else:
-            base_sql += f" AND (LOWER(p.name) LIKE {_ph()} OR LOWER(COALESCE(u.name,'')) LIKE {_ph()})"
-            like = f"%{q.lower()}%"
-            params = (like, like)
-
-    # Default DB order (may be overridden in Python for distance sort)
-    base_sql += " ORDER BY p.created_at DESC"
-    products = db_fetchall(base_sql, params)
-
-    # Enrich with distance if buyer location exists and farmer hub coords exist
-    enriched = []
-    for p in products:
-        dkm = None
-        try:
-            if has_buyer_loc and p.get("farmer_hub_lat") is not None and p.get("farmer_hub_lng") is not None:
-                dkm = haversine_km(float(buyer_lat), float(buyer_lng), float(p["farmer_hub_lat"]), float(p["farmer_hub_lng"]))
-        except Exception:
-            dkm = None
-        p2 = dict(p)
-        p2["distance_km"] = dkm
-        enriched.append(p2)
-
-    # Apply radius filter (only when we can compute distance)
-    if radius_km is not None and has_buyer_loc:
-        enriched = [p for p in enriched if (p.get("distance_km") is not None and p["distance_km"] <= radius_km)]
-
-    # Sort options
-    if sort == "nearest" and has_buyer_loc:
-        # Distance first; items without distance go last
-        enriched.sort(key=lambda p: (p.get("distance_km") is None, p.get("distance_km") if p.get("distance_km") is not None else 1e18, p.get("created_at") or ""))
-    elif sort == "price_asc":
-        enriched.sort(key=lambda p: (p.get("price") is None, float(p.get("price") or 0)))
-    elif sort == "price_desc":
-        enriched.sort(key=lambda p: (p.get("price") is None, -float(p.get("price") or 0)))
-    else:
-        # newest (already roughly ordered)
-        pass
-
-    # Group results by farmer to make shopping faster while preserving the single-farmer-per-order rule.
-    # This is a UI/UX grouping only; cart constraints remain enforced server-side.
-    groups_map = {}
-    groups_order = []
-    for p in enriched:
-        fid = p.get("farmer_user_id")
-        if fid not in groups_map:
-            g = {
-                "farmer_user_id": fid,
-                "farmer_name": p.get("farmer_name"),
-                "farmer_hub": p.get("farmer_hub"),
-                "distance_km": p.get("distance_km"),
-                "products": []
-            }
-            groups_map[fid] = g
-            groups_order.append(g)
-        groups_map[fid]["products"].append(p)
-
-    # If sorting by nearest, sort groups by farmer distance (unknown distances go last).
-    if sort == "nearest" and has_buyer_loc:
-        groups_order.sort(key=lambda g: (g.get("distance_km") is None, g.get("distance_km") if g.get("distance_km") is not None else 1e18))
-
-
+        ORDER BY p.created_at DESC
+    """)
     cart = get_cart()
     cart_count = sum(cart.values())
-
     return render_template(
         "buyer_dashboard.html",
         user=current_user(),
-        groups=groups_order,
-        products=enriched,
+        products=products,
         cart=cart,
         cart_count=cart_count,
-        q=q,
-        sort=sort,
-        radius_km=radius_km,
-        has_buyer_loc=has_buyer_loc,
-        buyer_lat=buyer_lat,
-        buyer_lng=buyer_lng,
     )
 
-@app.post('/buyer/location')
+@app.post("/cart/add")
 @login_required
-@role_required('buyer')
-def buyer_set_location():
-    """Persist buyer browsing location in session (for 'Near Me' filters)."""
-    data = request.get_json(silent=True) or {}
-    try:
-        lat = float(data.get('lat'))
-        lng = float(data.get('lng'))
-    except Exception:
-        return jsonify({'ok': False, 'error': 'Invalid latitude/longitude.'}), 400
-    # Basic bounds validation
-    if not (-90.0 <= lat <= 90.0 and -180.0 <= lng <= 180.0):
-        return jsonify({'ok': False, 'error': 'Latitude/longitude out of range.'}), 400
-    session['buyer_lat'] = lat
-    session['buyer_lng'] = lng
-    session['buyer_loc_set_at'] = now_str()
-    return jsonify({'ok': True})
-
-@app.post('/buyer/location/clear')
-@login_required
-@role_required('buyer')
-def buyer_clear_location():
-    session.pop('buyer_lat', None)
-    session.pop('buyer_lng', None)
-    session.pop('buyer_loc_set_at', None)
-    return jsonify({'ok': True})
-
-@app.post('/cart/add')
-@login_required
-@role_required('buyer')
+@role_required("buyer")
 def cart_add():
     pid = (request.form.get("product_id") or "").strip()
     qty = int((request.form.get("qty") or "1").strip() or "1")
     if qty < 1:
         qty = 1
-
-    # Enforce single-farmer checkout (MVP simplification).
-    # This allows the farmer to define ONE pickup point per order.
-    pr = db_fetchone(f"SELECT farmer_user_id FROM products WHERE id={_ph()} AND is_active=1", (pid,))
-    if not pr:
-        flash("Product not found.", "error")
-        return redirect(url_for("buyer_dashboard"))
-
     cart = get_cart()
-    if cart:
-        marks = _ph_list(len(cart))
-        existing = db_fetchall(f"SELECT DISTINCT farmer_user_id FROM products WHERE id IN ({marks})", tuple(cart.keys()))
-        existing_farmers = {int(r["farmer_user_id"]) for r in existing if r and r.get("farmer_user_id") is not None}
-        if existing_farmers and (int(pr["farmer_user_id"]) not in existing_farmers):
-            flash("Cart can only contain items from one farmer per order. Please checkout (or clear) your current cart first.", "error")
-            return redirect(url_for("buyer_dashboard"))
-
     cart[pid] = cart.get(pid, 0) + qty
     set_cart(cart)
     flash("Added to cart.", "ok")
@@ -1314,7 +1104,7 @@ def checkout():
         marks = _ph_list(len(cart))
         rows = db_fetchall(
             f"""
-            SELECT p.*, u.name AS farmer_name, u.hub AS farmer_hub, u.hub_lat AS farmer_hub_lat, u.hub_lng AS farmer_hub_lng, u.hub_accuracy AS farmer_hub_accuracy
+            SELECT p.*, u.name AS farmer_name, u.hub AS farmer_hub
             FROM products p
             JOIN users u ON u.id=p.farmer_user_id
             WHERE p.id IN ({marks})
@@ -1330,18 +1120,7 @@ def checkout():
             subtotal += line
             items.append({"product": pr, "qty": qty, "line_total": line})
 
-    farmer = None
-    if items:
-        p0 = items[0]["product"]
-        farmer = {
-            "name": p0.get("farmer_name"),
-            "hub": p0.get("farmer_hub"),
-            "hub_lat": p0.get("farmer_hub_lat"),
-            "hub_lng": p0.get("farmer_hub_lng"),
-            "hub_accuracy": p0.get("farmer_hub_accuracy"),
-        }
-
-    return render_template("checkout.html", user=current_user(), items=items, subtotal=subtotal, farmer=farmer)
+    return render_template("checkout.html", user=current_user(), items=items, subtotal=subtotal)
 
 def make_order_id() -> str:
     return "ORD-" + secrets.token_hex(4).upper()
@@ -1350,15 +1129,17 @@ def make_order_id() -> str:
 @login_required
 @role_required("buyer")
 def order_place():
-    # Buyer provides ONLY the delivery destination. Pickup/origin is defined by the farmer.
+    origin = (request.form.get("origin") or "").strip() or "Unknown"
     dest = (request.form.get("dest") or "").strip() or "Unknown"
 
-    # Optional browser GPS capture for delivery point
+    # Optional browser GPS capture at checkout
+    origin_lat = (request.form.get("origin_lat") or "").strip()
+    origin_lng = (request.form.get("origin_lng") or "").strip()
+    origin_accuracy = (request.form.get("origin_accuracy") or "").strip()
+
     dest_lat = (request.form.get("dest_lat") or "").strip()
     dest_lng = (request.form.get("dest_lng") or "").strip()
     dest_accuracy = (request.form.get("dest_accuracy") or "").strip()
-
-    cart = get_cart()
     cart = get_cart()
     if not cart:
         flash("Cart is empty.", "error")
@@ -1377,22 +1158,6 @@ def order_place():
         flash("No valid items in cart.", "error")
         return redirect(url_for("buyer_dashboard"))
 
-
-    # Derive farmer pickup (origin) from the single farmer represented in the cart
-    farmer_ids_in_cart = sorted({int(by_id.get(str(pid))["farmer_user_id"]) for pid in cart.keys() if by_id.get(str(pid))})
-    if not farmer_ids_in_cart:
-        flash("Unable to determine farmer for this order.", "error")
-        return redirect(url_for("buyer_dashboard"))
-    if len(farmer_ids_in_cart) != 1:
-        flash("This MVP supports one farmer per order (single pickup point). Please checkout items per farmer.", "error")
-        return redirect(url_for("checkout"))
-
-    farmer_id = farmer_ids_in_cart[0]
-    farmer = db_fetchone(
-        f"SELECT id, name, hub, hub_lat, hub_lng, hub_accuracy FROM users WHERE id={_ph()}",
-        (farmer_id,),
-    )
-    origin = (farmer.get("hub") if farmer else None) or (farmer.get("name") if farmer else None) or "Farmer pickup"
     oid = make_order_id()
     db_execute(
         f"""
@@ -1402,28 +1167,28 @@ def order_place():
         (oid, u["id"], origin, dest, now_str()),
     )
 
-    # Persist farmer pickup coordinates (from farmer profile) and buyer dropoff coordinates (optional GPS at checkout)
+    # Persist buyer-provided pickup/dropoff coordinates (if provided)
     def _to_float(s):
         try:
             return float(s)
         except Exception:
             return None
 
-    h_lat = _to_float(str(farmer.get("hub_lat"))) if farmer and farmer.get("hub_lat") is not None else None
-    h_lng = _to_float(str(farmer.get("hub_lng"))) if farmer and farmer.get("hub_lng") is not None else None
-    h_acc = _to_float(str(farmer.get("hub_accuracy"))) if farmer and farmer.get("hub_accuracy") is not None else None
+    o_lat = _to_float(origin_lat)
+    o_lng = _to_float(origin_lng)
+    o_acc = _to_float(origin_accuracy) if origin_accuracy else None
 
     d_lat = _to_float(dest_lat)
     d_lng = _to_float(dest_lng)
     d_acc = _to_float(dest_accuracy) if dest_accuracy else None
 
-    if h_lat is not None and h_lng is not None:
+    if o_lat is not None and o_lng is not None:
         db_execute(
             f"""
             INSERT INTO order_locations(order_id, user_id, role, lat, lng, accuracy, created_at)
             VALUES({_ph()}, {_ph()}, 'origin', {_ph()}, {_ph()}, {_ph()}, {_ph()})
             """,
-            (oid, int(farmer_id), h_lat, h_lng, h_acc, now_str()),
+            (oid, int(u["id"]), o_lat, o_lng, o_acc, now_str()),
         )
 
     if d_lat is not None and d_lng is not None:
@@ -1434,6 +1199,7 @@ def order_place():
             """,
             (oid, int(u["id"]), d_lat, d_lng, d_acc, now_str()),
         )
+
     for pid, qty in cart.items():
         pr = by_id.get(str(pid))
         if not pr:
@@ -1681,15 +1447,13 @@ def transporter_dashboard():
     u = current_user()
     assert u is not None
 
-    open_orders = [dict(r) for r in db_fetchall("""
+    open_orders = db_fetchall("""
         SELECT o.*,
                (SELECT COUNT(*) FROM quotes q WHERE q.order_id=o.id) AS quote_count
         FROM orders o
         WHERE o.status='NEEDS_QUOTES'
         ORDER BY o.created_at DESC
-    """)]
-    for o in open_orders:
-        o["distance_km"] = order_distance_km(o["id"])
+    """)
 
     my_quotes = db_fetchall(f"""
         SELECT q.*, o.origin, o.dest, o.status AS order_status
