@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="row space">
+  <div>
+    <h2>Transporter Dashboard</h2>
+    <div class="muted">Quote open orders. After acceptance: Start trip → Picked up → Delivered. Use Track for navigation.</div>
+  </div>
+  <div class="pillrow">
+    <a class="btn btn-ghost" href="/orders">Orders</a>
+    <a class="btn btn-light" href="/profile">Profile</a>
+  </div>
+</div>
+
+<div class="grid2">
+  <div class="card">
+    <h3>Open orders needing quotes</h3>
+    {% if open_orders %}
+      <div class="orders">
+        {% for o in open_orders %}
+          <div class="order-card">
+            <div class="row">
+              <div>
+                <div class="strong">{{ o.id }}</div>
+                <div class="muted small">{{ o.origin }} → {{ o.dest }} · {{ o.created_at }}</div>
+                {% if o.distance_km %}
+                  <div class="muted small">Distance: <b>{{ "%.1f"|format(o.distance_km) }} km</b></div>
+                  {% if o.suggested %}
+                    <div class="muted small">Suggested ({{ o.suggested.band }}): <b>{{ money(o.suggested.low) }} – {{ money(o.suggested.high) }}</b> <span class="muted">(guidance)</span></div>
+                  {% endif %}
+                {% else %}
+                  <div class="muted small">Distance: <span class="muted">not available (farmer/buyer GPS missing)</span></div>
+                {% endif %}
+                <div class="muted small">Existing quotes: {{ o.quote_count }}</div>
+              </div>
+              <div class="status {% if o.status == 'DELIVERED' %}status-delivered{% endif %}">{{ o.status }}</div>
+            </div>
+
+            <div class="spacer"></div>
+            <form method="post" action="/transport/quote" class="row">
+              <input type="hidden" name="order_id" value="{{ o.id }}">
+              <input name="price" type="number" min="1" placeholder="Your price (NGN)" required style="max-width:200px">
+              <input name="eta_hours" type="number" min="1" value="24" placeholder="ETA (hrs)" required style="max-width:140px">
+              <button class="btn btn-primary" type="submit">Submit Quote</button>
+            </form>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="muted">No open orders right now.</p>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h3>Accepted orders (deliver)</h3>
+    {% if accepted_orders %}
+      <div class="orders">
+        {% for o in accepted_orders %}
+          <div class="order-card">
+            <div class="row">
+              <div>
+                <div class="strong">{{ o.id }}</div>
+                <div class="muted small">{{ o.origin }} → {{ o.dest }} · ETA {{ o.eta_hours }} hrs</div>
+                <div class="muted small">Transport: <b>{{ money(o.price) }}</b></div>
+              </div>
+              <div class="status {% if o.status == 'DELIVERED' %}status-delivered{% endif %}">{{ o.status }}</div>
+            </div>
+
+            <div class="spacer"></div>
+            
+            <div class="row" style="gap:10px; flex-wrap:wrap;">
+              <a class="btn btn-ghost" href="/track/{{ o.id }}">Track</a>
+              {% if o.status == 'QUOTE_ACCEPTED' %}
+                <form method="post" action="/transport/start" class="inline">
+                  <input type="hidden" name="order_id" value="{{ o.id }}">
+                  <button class="btn btn-primary" type="submit">Start Trip (to pickup)</button>
+                </form>
+              {% elif o.status == 'EN_ROUTE_TO_PICKUP' %}
+                <form method="post" action="/transport/pickedup" class="inline">
+                  <input type="hidden" name="order_id" value="{{ o.id }}">
+                  <button class="btn btn-primary" type="submit">Picked Up (go to buyer)</button>
+                </form>
+              {% elif o.status == 'EN_ROUTE_TO_DROPOFF' %}
+                <form method="post" action="/transport/deliver" class="inline">
+                  <input type="hidden" name="order_id" value="{{ o.id }}">
+                  <button class="btn btn-primary" type="submit">Mark Delivered</button>
+                </form>
+              {% endif %}
+            </div>
+
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="muted">None assigned yet.</p>
+    {% endif %}
+
+    <div class="spacer"></div>
+    <h3>Your quote history</h3>
+    {% if my_quotes %}
+      <div class="table">
+        <div class="thead">
+          <div>Order</div><div>Price</div><div>ETA</div><div>Status</div>
+        </div>
+        {% for q in my_quotes %}
+          <div class="trow">
+            <div class="strong">{{ q.order_id }} <span class="muted small">({{ q.origin }}→{{ q.dest }})</span></div>
+            <div><b>{{ money(q.price) }}</b></div>
+            <div class="muted">{{ q.eta_hours }} hrs</div>
+            <div class="muted small">{{ q.status }}</div>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="muted">No quotes submitted yet.</p>
+    {% endif %}
+  </div>
+</div>
+
+{% endblock %}

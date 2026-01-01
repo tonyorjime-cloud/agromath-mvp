@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="row space">
+  <div>
+    <h2>Order Chat</h2>
+    <div class="muted">Order {{ order_id }} · Status: {{ order_status }} · Participants: buyer, farmer(s), accepted transporter</div>
+  </div>
+  <div class="pillrow">
+    <a class="btn btn-ghost" href="/orders">Back to Orders</a>
+    <a class="btn btn-ghost" href="/track/{{ order_id }}">Track</a>
+  </div>
+</div>
+
+<div class="card">
+  {% if chat_closed %}
+    <div class="flash ok">Order delivered. Chat is closed.</div>
+    <div class="spacer"></div>
+  {% endif %}
+  <div id="chatBox" class="chatbox" style="max-height:420px; overflow:auto; padding:10px;">
+    {% if messages %}
+      {% for m in messages %}
+        <div class="chatmsg {% if m.sender_user_id == user.id %}me{% endif %}" data-id="{{ m.id }}">
+          <div class="muted small">
+            <b>{{ m.sender_name or m.sender_role }}</b>
+            <span class="muted">· {{ m.created_at }}</span>
+          </div>
+          <div class="chattext">{{ m.message }}</div>
+        </div>
+      {% endfor %}
+    {% else %}
+      <div class="muted">No messages yet.</div>
+    {% endif %}
+  </div>
+
+  <div class="spacer"></div>
+
+  <div class="row">
+    <input id="msgInput" placeholder="Type a message…" style="flex:1;" {% if chat_closed %}disabled{% endif %}>
+    <button class="btn btn-primary" id="sendBtn" type="button" {% if chat_closed %}disabled{% endif %}>Send</button>
+  </div>
+  <div class="muted small" id="sendStatus"></div>
+</div>
+
+<script>
+(function(){
+  const orderId = "{{ order_id }}";
+  const chatClosed = {{ 'true' if chat_closed else 'false' }};
+  const box = document.getElementById('chatBox');
+  const input = document.getElementById('msgInput');
+  const sendBtn = document.getElementById('sendBtn');
+  const statusEl = document.getElementById('sendStatus');
+
+  function lastId(){
+    const nodes = box.querySelectorAll('[data-id]');
+    if(!nodes.length) return 0;
+    const last = nodes[nodes.length-1];
+    const v = parseInt(last.getAttribute('data-id')||'0',10);
+    return isNaN(v)?0:v;
+  }
+
+  function scrollDown(){
+    box.scrollTop = box.scrollHeight;
+  }
+  scrollDown();
+
+  function renderMsg(m){
+    const wrap = document.createElement('div');
+    wrap.className = 'chatmsg';
+    wrap.setAttribute('data-id', m.id);
+
+    const hdr = document.createElement('div');
+    hdr.className = 'muted small';
+    const b = document.createElement('b');
+    b.textContent = m.sender_name || m.sender_role || 'User';
+    hdr.appendChild(b);
+    const t = document.createElement('span');
+    t.className = 'muted';
+    t.textContent = ' · ' + (m.created_at || '');
+    hdr.appendChild(t);
+
+    const body = document.createElement('div');
+    body.className = 'chattext';
+    body.textContent = m.message || '';
+
+    wrap.appendChild(hdr);
+    wrap.appendChild(body);
+    box.appendChild(wrap);
+  }
+
+  async function poll(){
+    try{
+      const since = lastId();
+      const r = await fetch(`/api/order/${orderId}/messages?since=${encodeURIComponent(since)}`, {cache:'no-store'});
+      if(!r.ok) return;
+      const j = await r.json();
+      if(!j.ok) return;
+      if(j.messages && j.messages.length){
+        j.messages.forEach(renderMsg);
+        scrollDown();
+      }
+    }catch(e){}
+  }
+
+  // Stop polling once delivered (chat closed)
+  if(!chatClosed){
+    setInterval(poll, 3000);
+  }
+
+  async function send(){
+    if(chatClosed){
+      statusEl.textContent = 'Order delivered. Chat is closed.';
+      return;
+    }
+    const msg = (input.value || '').trim();
+    if(!msg) return;
+    sendBtn.disabled = true;
+    statusEl.textContent = 'Sending…';
+    try{
+      const r = await fetch(`/api/order/${orderId}/messages`, {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({message: msg})
+      });
+      const j = await r.json().catch(()=>null);
+      if(!r.ok || !j || !j.ok){
+        statusEl.textContent = (j && j.error) ? ('Send failed: ' + j.error) : 'Send failed.';
+      }else{
+        input.value = '';
+        statusEl.textContent = '';
+        poll();
+      }
+    }catch(e){
+      statusEl.textContent = 'Send failed (network).';
+    }finally{
+      sendBtn.disabled = false;
+      input.focus();
+    }
+  }
+
+  sendBtn.addEventListener('click', send);
+  input.addEventListener('keydown', function(e){
+    if(e.key === 'Enter'){ send(); }
+  });
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="card">
+  <h2>Farmer registration pending</h2>
+  <p class="muted">
+    Your farmer account is waiting for approval before you can list products.
+    This is to keep the marketplace clean during testing.
+  </p>
+
+  <div class="summary">
+    <div class="sumrow"><span>Phone</span><b>{{ user.phone }}</b></div>
+    <div class="sumrow"><span>Status</span><b>{{ user.farmer_status }}</b></div>
+    <div class="sumrow"><span>Admin (approvals)</span><b>{{ admin_phone }}</b></div>
+  </div>
+
+  <div class="spacer"></div>
+  <div class="row">
+    <a class="btn btn-light" href="/profile">Back to profile</a>
+    {% if user.phone == admin_phone %}
+      <a class="btn btn-dark" href="/admin">Admin approvals</a>
+    {% endif %}
+  </div>
+</div>
+
+{% endblock %}

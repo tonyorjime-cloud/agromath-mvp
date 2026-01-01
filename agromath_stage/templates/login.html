@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="grid2">
+  <div class="card">
+    <h2>Login</h2>
+    <p class="muted">Demo OTP is displayed on-screen (no SMS yet).</p>
+
+    <h3>1) Send OTP</h3>
+    <form method="post" action="/login" class="stack">
+      <input name="phone" placeholder="Phone number" required value="{{ phone or '' }}">
+      <button class="btn btn-primary" type="submit">Send OTP</button>
+    </form>
+
+    {% if demo_otp %}
+      <div class="spacer"></div>
+      <div class="note">
+        <div class="strong">Demo OTP (for testing)</div>
+        <div class="otp">{{ demo_otp }}</div>
+        <div class="muted small">Valid for {{ 10 }} minutes.</div>
+      </div>
+    {% endif %}
+
+    <div class="spacer"></div>
+
+    <h3>2) Verify OTP</h3>
+    <form method="post" action="/verify" class="stack">
+      <input name="otp" placeholder="Enter OTP" required>
+      <button class="btn btn-dark" type="submit">Verify</button>
+    </form>
+  </div>
+
+  <div class="card hero">
+    <h2>What you’re testing</h2>
+    <ul class="list">
+      <li>Buyer: add items → cart → checkout → place order</li>
+      <li>Transporter: quote → buyer accepts/declines → deliver</li>
+      <li>Farmer: request approval → list products → see relevant orders</li>
+    </ul>
+    <p class="muted">Next phase is real payments + maps + escrow.</p>
+  </div>
+</div>
+
+{% endblock %}

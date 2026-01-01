@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="row space">
+  <div>
+    <h2>Share Pickup Location</h2>
+    <div class="muted">Order {{ order.id }} · This pickup location will be used by the transporter for quoting and navigation.</div>
+  </div>
+  <div class="pillrow">
+    <a class="btn btn-ghost" href="/farmer">Back to Farmer Dashboard</a>
+    <a class="btn btn-ghost" href="/track/{{ order.id }}">Track</a>
+  </div>
+</div>
+
+<div class="card">
+  <div class="muted small">
+    Step 1: Tap <b>Use my current location</b> while you are at the pickup point (where the goods will be collected).<br>
+    Step 2: Submit. Once submitted, transporters will be notified to quote.
+  </div>
+
+  <div class="spacer"></div>
+
+  <form method="post" class="stack" id="pickupForm">
+    <div class="row" style="gap:10px; flex-wrap:wrap;">
+      <button class="btn btn-light" type="button" id="btnPickupGps">Use my current location (pickup)</button>
+      <div class="muted small" id="pickupGpsStatus"></div>
+    </div>
+
+    <input type="hidden" name="pickup_lat" id="pickup_lat">
+    <input type="hidden" name="pickup_lng" id="pickup_lng">
+    <input type="hidden" name="pickup_accuracy" id="pickup_accuracy">
+
+    <button class="btn btn-primary" type="submit">Share Pickup Location</button>
+  </form>
+
+  <div class="spacer"></div>
+  <div class="muted small">Note: GPS requires HTTPS (secure connection) and location permission on your phone.</div>
+</div>
+
+<script>
+(function(){
+  const statusEl = document.getElementById('pickupGpsStatus');
+
+  function setStatus(msg){ statusEl.textContent = msg || ''; }
+
+  async function pingDebug(payload){
+    try{
+      await fetch('/api/debug/location_ping', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(payload)
+      });
+    }catch(e){ /* ignore */ }
+  }
+
+  function insecureHint(){
+    if (typeof window.isSecureContext !== 'undefined' && !window.isSecureContext) {
+      return 'Location needs HTTPS. Open the https:// version of this site and try again.';
+    }
+    return '';
+  }
+
+  function capture(){
+    if(!navigator.geolocation){
+      setStatus('Geolocation not supported on this browser.');
+      return;
+    }
+    const hint = insecureHint();
+    if(hint){
+      setStatus(hint);
+      return;
+    }
+    setStatus('Getting GPS…');
+    navigator.geolocation.getCurrentPosition(
+      function(p){
+        const lat = p.coords.latitude;
+        const lng = p.coords.longitude;
+        const acc = p.coords.accuracy;
+
+        document.getElementById('pickup_lat').value = String(lat);
+        document.getElementById('pickup_lng').value = String(lng);
+        document.getElementById('pickup_accuracy').value = String(acc || '');
+
+        setStatus(`Captured: ${lat.toFixed(5)}, ${lng.toFixed(5)} (±${Math.round(acc||0)}m)`);
+
+        pingDebug({ role: 'farmer', page: 'farmer_pickup_share', lat, lng, accuracy: acc });
+      },
+      function(err){
+        const code = (err && typeof err.code !== 'undefined') ? err.code : '';
+        const msg = (err && err.message) ? err.message : 'Unknown error';
+        setStatus(`GPS error${code ? ' ('+code+')' : ''}: ${msg}`);
+
+        pingDebug({ role: 'farmer', page: 'farmer_pickup_share', error_code: code, error_message: msg });
+      },
+      {enableHighAccuracy:true, maximumAge:10000, timeout:15000}
+    );
+  }
+
+  document.getElementById('btnPickupGps').addEventListener('click', capture);
+})();
+</script>
+
+{% endblock %}

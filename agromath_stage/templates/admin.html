@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="row space">
+  <div>
+    <h2>Admin approvals</h2>
+    <div class="muted">Approve or decline farmer registrations.</div>
+  </div>
+  <div class="pillrow">
+    <a class="btn btn-light" href="/profile">Profile</a>
+  </div>
+</div>
+
+<div class="card">
+  {% if pending %}
+    <div class="orders">
+      {% for f in pending %}
+        <div class="order-card">
+          <div class="row">
+            <div>
+              <div class="strong">{{ f.name or "—" }}</div>
+              <div class="muted small">{{ f.phone }} · Hub: {{ f.hub or "—" }} · {{ f.created_at }}</div>
+            </div>
+            <div class="status">{{ f.farmer_status }}</div>
+          </div>
+
+          <div class="spacer"></div>
+          <div class="row">
+            <form method="post" action="/admin/farmer/approve" class="inline">
+              <input type="hidden" name="user_id" value="{{ f.id }}">
+              <button class="btn btn-primary" type="submit">Approve</button>
+            </form>
+
+            <form method="post" action="/admin/farmer/decline" class="inline">
+              <input type="hidden" name="user_id" value="{{ f.id }}">
+              <button class="btn btn-light" type="submit">Decline</button>
+            </form>
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="muted">No pending farmers right now.</p>
+  {% endif %}
+</div>
+
+{% endblock %}

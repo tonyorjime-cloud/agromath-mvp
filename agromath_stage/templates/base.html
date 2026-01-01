@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>AgroMath MVP</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="topbar">
+    <div class="container row space">
+      <div class="brand">
+        <div class="logo">A</div>
+        <div>
+          <div class="brandname">AgroMath</div>
+          <div class="tag">Farm → City logistics, MVP</div>
+        </div>
+      </div>
+
+      <div class="nav">
+        {% if session.get("uid") %}
+          <a class="navlink" href="/dashboard">Dashboard</a>
+          <a class="navlink" href="/orders">Orders</a>
+          <a class="navlink" href="#" id="installAppLink">Install App</a>
+          <a class="navlink" href="/help">Help</a>
+          <a class="navlink" href="/profile">Profile</a>
+          <a class="navlink" href="/logout">Logout</a>
+        {% else %}
+          <a class="navlink" href="/login">Login</a>
+          <a class="navlink" href="#" id="installAppLink">Install App</a>
+          <a class="navlink" href="/help">Help</a>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="container">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <div class="flashwrap">
+          {% for cat, msg in messages %}
+            <div class="flash {{ cat }}">{{ msg }}</div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+
+    {% block content %}{% endblock %}
+  </div>
+
+  <!-- Phase 1 notifications: in-app polling + unique sound -->
+  {% if session.get("uid") %}
+    <div id="agroToast" class="toast" style="display:none"></div>
+    <audio id="agroNotifySound" preload="auto">
+      <source src="{{ url_for('static', filename='notify.wav') }}" type="audio/wav">
+    </audio>
+    <script>
+      (function(){
+        const toast = document.getElementById('agroToast');
+        const sound = document.getElementById('agroNotifySound');
+        const keyLast = 'agro_last_notif_id';
+        const keySound = 'agro_sound_enabled';
+
+        function getLast(){
+          const v = localStorage.getItem(keyLast);
+          const n = parseInt(v || '0', 10);
+          return isNaN(n) ? 0 : n;
+        }
+        function setLast(id){ localStorage.setItem(keyLast, String(id||0)); }
+        function soundEnabled(){
+          const v = localStorage.getItem(keySound);
+          return v === null ? true : (v === 'true');
+        }
+
+        function showToast(message, link){
+          toast.innerHTML = '';
+          const box = document.createElement('div');
+          box.className = 'toast-inner';
+          const text = document.createElement('div');
+          text.className = 'toast-text';
+          text.textContent = message;
+          box.appendChild(text);
+
+          if (link){
+            const a = document.createElement('a');
+            a.className = 'toast-link';
+            a.href = link;
+            a.textContent = 'Open';
+            box.appendChild(a);
+          }
+
+          const btn = document.createElement('button');
+          btn.className = 'toast-close';
+          btn.type = 'button';
+          btn.textContent = '×';
+          btn.onclick = () => { toast.style.display='none'; };
+          box.appendChild(btn);
+
+          toast.appendChild(box);
+          toast.style.display = 'block';
+
+          // auto-hide
+          setTimeout(()=>{ toast.style.display='none'; }, 6000);
+        }
+
+        async function poll(){
+          try {
+            const since = getLast();
+            const res = await fetch('/api/notifications?since=' + encodeURIComponent(since), {cache:'no-store'});
+            if (!res.ok) return;
+            const data = await res.json();
+            if (data && data.latest_id !== undefined){
+              setLast(data.latest_id);
+            }
+            if (data && data.items && data.items.length){
+              const first = data.items[0];
+              if (soundEnabled()){
+                try { await sound.play(); } catch(e) { /* browser may block until user interacts */ }
+              }
+              showToast(first.message, first.link);
+            }
+          } catch (e) {
+            // silent: polling shouldn't break the UI
+          }
+        }
+
+        // Start polling
+        setTimeout(poll, 1500);
+        setInterval(poll, 10000);
+
+        // Optional: quick toggle via keyboard (Shift+N)
+        document.addEventListener('keydown', (e)=>{
+          if (e.shiftKey && (e.key === 'N' || e.key === 'n')){
+            localStorage.setItem(keySound, String(!soundEnabled()));
+            showToast('Notification sound: ' + (soundEnabled() ? 'ON' : 'OFF'), '');
+          }
+        });
+      })();
+    </script>
+  {% endif %}
+
+  <!-- Install App helper (PWA) -->
+  <div id="installModal" class="modal" style="display:none;">
+    <div class="modal-backdrop" id="installBackdrop"></div>
+    <div class="modal-card">
+      <div class="row space">
+        <div>
+          <div class="strong">Install AgroMath</div>
+          <div class="muted small">Get an icon on your home screen and open full-screen.</div>
+        </div>
+        <button class="btn btn-light" type="button" id="installCloseBtn">Close</button>
+      </div>
+      <div class="spacer"></div>
+      <div class="stack">
+        <div class="card" style="padding:12px;">
+          <div class="strong">Android (Chrome)</div>
+          <div class="muted small">Tap the three dots (⋮) → <b>Install app</b> or <b>Add to Home screen</b>.</div>
+        </div>
+        <div class="card" style="padding:12px;">
+          <div class="strong">iPhone (Safari)</div>
+          <div class="muted small">Tap <b>Share</b> → <b>Add to Home Screen</b>.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function(){
+      const link = document.getElementById('installAppLink');
+      const modal = document.getElementById('installModal');
+      const closeBtn = document.getElementById('installCloseBtn');
+      const backdrop = document.getElementById('installBackdrop');
+      if(!link || !modal) return;
+      function open(){ modal.style.display = 'block'; }
+      function close(){ modal.style.display = 'none'; }
+      link.addEventListener('click', (e)=>{ e.preventDefault(); open(); });
+      if(closeBtn) closeBtn.addEventListener('click', close);
+      if(backdrop) backdrop.addEventListener('click', close);
+    })();
+  </script>
+
+  <div class="footer">
+    <div class="container muted small">
+      Built for testing. <a href="/terms">Terms</a> · <a href="/privacy">Privacy</a>
+    </div>
+  </div>
+</body>
+</html>

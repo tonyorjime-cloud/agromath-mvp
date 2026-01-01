@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="row space">
+  <div>
+    <h2>Checkout</h2>
+    <div class="muted">Confirm your cart, then place the order (transport quotes come later).</div>
+  </div>
+  <div class="pillrow">
+    <a class="btn btn-ghost" href="/buyer">Back to products</a>
+    <a class="btn btn-ghost" href="/orders">Orders</a>
+  </div>
+</div>
+
+<div class="grid2">
+  <div class="card">
+    <h3>Cart Items</h3>
+
+    {% if items %}
+      <div class="table">
+        <div class="thead">
+          <div>Item</div><div>Farmer</div><div>Qty</div><div>Unit</div><div>Line</div><div></div>
+        </div>
+        {% for it in items %}
+          <div class="trow">
+            <div class="strong">{{ it.product.name }}</div>
+            <div class="muted">{{ it.product.farmer_name or "—" }}</div>
+            <div>{{ it.qty }}</div>
+            <div>{{ money(it.product.price) }}</div>
+            <div><b>{{ money(it.line_total) }}</b></div>
+            <div>
+              <form method="post" action="/cart/remove" class="inline">
+                <input type="hidden" name="product_id" value="{{ it.product.id }}">
+                <button class="btn btn-light" type="submit">Remove</button>
+              </form>
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+
+      <div class="spacer"></div>
+      <div class="summary">
+        <div class="sumrow"><span>Subtotal</span><b>{{ money(subtotal) }}</b></div>
+      </div>
+
+    {% else %}
+      <p class="muted">Your cart is empty.</p>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h3>Place Order</h3>
+    <form method="post" action="/order/place" class="stack" id="orderForm">
+      <label class="label">Pickup (shared by farmer after you place the order)</label>
+      <input value="{% if farmer %}{{ farmer.hub or farmer.name or 'Farmer pickup' }}{% else %}Farmer pickup{% endif %}" readonly>
+      <div class="muted small" style="margin-top:6px;">
+        After you place the order, the farmer will share the exact pickup GPS for this order. Once shared, transporters will be notified and can quote accurately.
+      </div>
+
+      <label class="label">Destination (buyer drop-off)</label>
+      <input id="destText" name="dest" placeholder="e.g., Wuse 2, Abuja" required>
+
+      <div class="row">
+        <button class="btn btn-light" type="button" id="btnDestGps">Use my current location (destination)</button>
+        <div class="muted small" id="destGpsStatus"></div>
+      </div>
+
+      <input type="hidden" name="dest_lat" id="dest_lat">
+      <input type="hidden" name="dest_lng" id="dest_lng">
+      <input type="hidden" name="dest_accuracy" id="dest_accuracy">
+
+      <button class="btn btn-primary" type="submit" {% if not items %}disabled{% endif %}>Place Order</button>
+    </form>
+
+    <p class="muted small">GPS is required for delivery quoting and tracking. Please capture your destination GPS before placing the order.</p>
+
+    <script>
+    (function(){
+      function setStatus(el, msg){ el.textContent = msg || ''; }
+
+      async function pingDebug(payload){
+        try{
+          await fetch('/api/debug/location_ping', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify(payload)
+          });
+        }catch(e){ /* ignore */ }
+      }
+
+      const statusEl = document.getElementById('destGpsStatus');
+
+      function insecureHint(){
+        // Geolocation generally requires a secure context (HTTPS), except on localhost.
+        if (typeof window.isSecureContext !== 'undefined' && !window.isSecureContext) {
+          return 'Location needs HTTPS. Open the https:// version of this site and try again.';
+        }
+        return '';
+      }
+
+      function capture(which){
+        if(!navigator.geolocation){
+          alert('Geolocation not supported on this browser.');
+          return;
+        }
+        const hint = insecureHint();
+        if (hint){
+          setStatus(statusEl, hint);
+          return;
+        }
+
+        setStatus(statusEl, 'Getting GPS…');
+
+        navigator.geolocation.getCurrentPosition(
+          function(p){
+            const lat = p.coords.latitude;
+            const lng = p.coords.longitude;
+            const acc = p.coords.accuracy;
+
+            document.getElementById(which + '_lat').value = String(lat);
+            document.getElementById(which + '_lng').value = String(lng);
+            document.getElementById(which + '_accuracy').value = String(acc || '');
+
+            setStatus(statusEl, `Captured: ${lat.toFixed(5)}, ${lng.toFixed(5)} (±${Math.round(acc||0)}m)`);
+
+            pingDebug({ role: 'buyer', page: 'checkout_destination', lat, lng, accuracy: acc });
+          },
+          function(err){
+            const code = err && typeof err.code !== 'undefined' ? err.code : '';
+            const msg = err && err.message ? err.message : 'Unknown error';
+            // Common codes: 1=PERMISSION_DENIED, 2=POSITION_UNAVAILABLE, 3=TIMEOUT
+            setStatus(statusEl, `GPS error${code ? ' ('+code+')' : ''}: ${msg}`);
+
+            pingDebug({ role: 'buyer', page: 'checkout_destination', error_code: code, error_message: msg });
+          },
+          {enableHighAccuracy:true, maximumAge:10000, timeout:15000}
+        );
+      }
+
+      document.getElementById('btnDestGps').addEventListener('click', function(){ capture('dest'); });
+    })();
+    </script>
+  </div>
+</div>
+
+{% endblock %}
