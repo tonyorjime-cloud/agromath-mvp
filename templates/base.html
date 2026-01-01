@@ -4,6 +4,10 @@
   <meta charset="utf-8">
   <title>AgroMath MVP</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- PWA -->
+  <meta name="theme-color" content="#0b1226">
+  <link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='icon-192.png') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
@@ -21,11 +25,13 @@
         {% if session.get("uid") %}
           <a class="navlink" href="/dashboard">Dashboard</a>
           <a class="navlink" href="/orders">Orders</a>
+          <a class="navlink" href="#" id="installAppLink">Install App</a>
           <a class="navlink" href="/help">Help</a>
           <a class="navlink" href="/profile">Profile</a>
           <a class="navlink" href="/logout">Logout</a>
         {% else %}
           <a class="navlink" href="/login">Login</a>
+          <a class="navlink" href="#" id="installAppLink">Install App</a>
           <a class="navlink" href="/help">Help</a>
         {% endif %}
       </div>
@@ -45,6 +51,44 @@
 
     {% block content %}{% endblock %}
   </div>
+
+  <!-- Install App modal (PWA) -->
+  <div id="installModal" class="modal" style="display:none">
+    <div class="modal-card">
+      <div class="row space">
+        <div class="strong">Install AgroMath</div>
+        <button class="btn btn-light" id="installClose" type="button">Close</button>
+      </div>
+      <div class="spacer"></div>
+      <div class="muted small">
+        <div><b>Android (Chrome)</b>: tap ⋮ then choose <b>Install app</b> or <b>Add to Home screen</b>.</div>
+        <div class="spacer"></div>
+        <div><b>iPhone (Safari)</b>: tap the <b>Share</b> icon, then <b>Add to Home Screen</b>.</div>
+        <div class="spacer"></div>
+        <div class="muted">Tip: after installation, the app opens full-screen like a normal app.</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Service worker registration for PWA installability and offline caching.
+    (function(){
+      if('serviceWorker' in navigator){
+        navigator.serviceWorker.register('{{ url_for('static', filename='sw.js') }}')
+          .catch(function(){ /* fail silently */ });
+      }
+
+      // Simple install instructions (works across Android/iOS without relying on fragile prompts)
+      const link = document.getElementById('installAppLink');
+      const modal = document.getElementById('installModal');
+      const close = document.getElementById('installClose');
+      function open(){ if(modal) modal.style.display='block'; }
+      function hide(){ if(modal) modal.style.display='none'; }
+      if(link){ link.addEventListener('click', function(e){ e.preventDefault(); open(); }); }
+      if(close){ close.addEventListener('click', function(){ hide(); }); }
+      if(modal){ modal.addEventListener('click', function(e){ if(e.target === modal) hide(); }); }
+    })();
+  </script>
 
   <!-- Phase 1 notifications: in-app polling + unique sound -->
   {% if session.get("uid") %}

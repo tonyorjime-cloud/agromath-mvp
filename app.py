@@ -899,12 +899,13 @@ def track_order(order_id: str):
 
     o = db_fetchone(f"SELECT * FROM orders WHERE id={_ph()}", (order_id,))
     status = _row_get(o, "status", "") if o else ""
+    tracking_closed = (status == 'DELIVERED')
     assigned = False
     if u["role"] == "transporter":
         atid = accepted_transporter_id(order_id)
         assigned = bool(atid and int(atid) == int(u["id"]))
 
-    return render_template("track.html", user=u, order_id=order_id, status=status, assigned=assigned)
+    return render_template("track.html", user=u, order_id=order_id, status=status, assigned=assigned, tracking_closed=tracking_closed)
 
 @app.get("/api/order/<order_id>/track")
 @login_required
@@ -950,6 +951,8 @@ def api_order_track(order_id: str):
 
 
     order_row = db_fetchone(f"SELECT id, status, created_at FROM orders WHERE id={_ph()}", (order_id,))
+    status = _row_get(order_row, 'status', '') if order_row else ''
+    tracking_closed = (status == 'DELIVERED')
     events = db_fetchall(
         f"""
         SELECT status, actor_user_id, actor_role, created_at
@@ -964,6 +967,7 @@ def api_order_track(order_id: str):
         {
             "ok": True,
             "order": _row_to_dict(order_row),
+            "tracking_closed": tracking_closed,
             "origin": _row_to_dict(origin),
             "dropoff": _row_to_dict(dropoff),
             "transporter": _row_to_dict(transporter),
@@ -983,6 +987,11 @@ def api_order_location(order_id: str):
     atid = accepted_transporter_id(order_id)
     if not atid or int(u["id"]) != int(atid):
         return jsonify({"ok": False, "error": "not_accepted_transporter"}), 403
+
+    # Hard stop: no tracking updates after delivery
+    o = db_fetchone(f"SELECT status FROM orders WHERE id={_ph()}", (order_id,))
+    if o and _row_get(o, 'status', '') == 'DELIVERED':
+        return jsonify({"ok": False, "error": "tracking_closed"}), 409
 
     j = request.get_json(silent=True) or {}
     try:
@@ -1029,6 +1038,10 @@ def chat_order(order_id: str):
         flash("Chat becomes available after you accept a transporter quote.", "warn")
         return redirect(url_for("orders"))
 
+    o = db_fetchone(f"SELECT status FROM orders WHERE id={_ph()}", (order_id,))
+    status = _row_get(o, 'status', '') if o else ''
+    chat_closed = (status == 'DELIVERED')
+
     msgs = db_fetchall(
         f"""
         SELECT m.*, u.name AS sender_name, u.role AS sender_role
@@ -1041,11 +1054,14 @@ def chat_order(order_id: str):
         (order_id,),
     )
 
-    return render_template("chat.html", user=u, order_id=order_id, messages=msgs)
+    return render_template("chat.html", user=u, order_id=order_id, messages=msgs, status=status, chat_closed=chat_closed)
 
 @app.get("/api/order/<order_id>/messages")
 @login_required
 def api_order_messages(order_id: str):
+    o = db_fetchone(f"SELECT status FROM orders WHERE id={_ph()}", (order_id,))
+    status = _row_get(o, 'status', '') if o else ''
+    chat_closed = (status == 'DELIVERED')
     u = current_user()
     if not u:
         return jsonify({"ok": False, "error": "not_logged_in"}), 401
@@ -1071,7 +1087,7 @@ def api_order_messages(order_id: str):
         """,
         (order_id, since_id),
     )
-    return jsonify({"ok": True, "messages": [ _row_to_dict(m) for m in msgs ]})
+    return jsonify({"ok": True, "chat_closed": chat_closed, "messages": [ _row_to_dict(m) for m in msgs ]})
 
 @app.post("/api/order/<order_id>/messages")
 @login_required
@@ -1086,6 +1102,11 @@ def api_order_send_message(order_id: str):
 
     if not accepted_transporter_id(order_id):
         return jsonify({"ok": False, "error": "chat_not_active"}), 400
+
+    # Hard stop: no chatting after delivery
+    o = db_fetchone(f"SELECT status FROM orders WHERE id={_ph()}", (order_id,))
+    if o and _row_get(o, 'status', '') == 'DELIVERED':
+        return jsonify({"ok": False, "error": "chat_closed"}), 409
 
     j = request.get_json(silent=True) or {}
     msg = (j.get("message") or "").strip()

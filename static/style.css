@@ -178,6 +178,20 @@ input:focus, select:focus{border-color: rgba(91,140,255,.65)}
   background: rgba(8,12,26,.35);
   white-space:nowrap;
 }
+
+/* Delivered status: clear green emphasis */
+.status.delivered{
+  background: rgba(46, 229, 157, .12);
+  border: 2px solid rgba(46, 229, 157, .75);
+  color: rgba(46, 229, 157, .95);
+}
+
+/* Disabled buttons/links (used for delivered orders) */
+.btn.disabled,
+.btn[aria-disabled="true"]{
+  opacity: .55;
+  pointer-events: none;
+}
 .summary{
   margin-top:10px;
   border-top:1px solid var(--line);
@@ -207,6 +221,23 @@ input:focus, select:focus{border-color: rgba(91,140,255,.65)}
 .badge.accepted{border-color: rgba(46,229,157,.55); color: rgba(46,229,157,.95)}
 .badge.declined{border-color: rgba(255,92,122,.55); color: rgba(255,92,122,.95)}
 .badge.pending{border-color: rgba(255,204,102,.55); color: rgba(255,204,102,.95)}
+
+/* Simple modal used for Install App instructions */
+.modal{
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.55);
+  z-index: 9999;
+  padding: 24px;
+}
+.modal-card{
+  max-width: 560px;
+  margin: 10vh auto;
+  background: rgba(8,12,26,.98);
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 16px;
+  padding: 18px;
+}
 
 .footer{margin-top:22px;text-align:center}
 

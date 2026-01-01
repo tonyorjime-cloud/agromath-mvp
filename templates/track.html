@@ -4,6 +4,9 @@
   <div>
     <h2>Live Tracking</h2>
     <div class="muted">Order {{ order_id }} · Status: {{ status }}</div>
+    {% if tracking_closed %}
+      <div class="badge accepted" style="margin-top:6px;">Delivered — tracking closed</div>
+    {% endif %}
   </div>
   <div class="pillrow">
     <a class="btn btn-ghost" href="/orders">Back to Orders</a>
@@ -31,8 +34,8 @@
       <div class="spacer"></div>
     {% endif %}
     <div class="row">
-      <button class="btn btn-primary" id="gpsStart" type="button" {% if not assigned %}disabled{% endif %}>Start sharing location</button>
-      <button class="btn btn-light" id="gpsStop" type="button" disabled>Stop</button>
+      <button class="btn btn-primary" id="gpsStart" type="button" {% if not assigned or tracking_closed %}disabled{% endif %}>Start sharing location</button>
+      <button class="btn btn-light" id="gpsStop" type="button" disabled {% if tracking_closed %}disabled{% endif %}>Stop</button>
       <div class="muted small" id="gpsStatus" style="margin-left:10px;">Not sharing yet.</div>
     </div>
     <div class="spacer"></div>
@@ -65,6 +68,7 @@
   const orderId = "{{ order_id }}";
   const role = "{{ user.role }}";
   const orderStatus = "{{ status }}";
+  const trackingClosed = {{ 'true' if tracking_closed else 'false' }};
   let lastBuyer = null;
 
   // map init (Abuja-ish default)
@@ -190,6 +194,18 @@
         document.getElementById('trackInfo').textContent = j.error || 'Not available';
         return;
       }
+      if(j.tracking_closed){
+        if(pollTimer){ clearInterval(pollTimer); pollTimer = null; }
+        document.getElementById('trackInfo').textContent = 'Tracking closed (delivered).';
+        const st = document.getElementById('gpsStatus');
+        if(st) st.textContent = 'Delivered — location sharing disabled.';
+        try{
+          if(window.__gpsWatchId !== null && navigator.geolocation){
+            navigator.geolocation.clearWatch(window.__gpsWatchId);
+          }
+          window.__gpsWatchId = null;
+        }catch(e){}
+      }
       lastBuyer = j.dropoff || null;
       window.__lastOrigin = j.origin || null;
       setMarker('origin', j.origin);
@@ -244,7 +260,12 @@
   }
 
   refresh();
-  setInterval(refresh, 10000); // 10s poll
+  let pollTimer = null;
+  if(!trackingClosed){
+    pollTimer = setInterval(refresh, 10000); // 10s poll
+  }else{
+    document.getElementById('trackInfo').textContent = 'Tracking closed (delivered).';
+  }
 
   // Navigation gating: drop-off navigation becomes primary after pickup is confirmed.
   if(role === 'transporter'){
@@ -292,6 +313,7 @@
   // If transporter, hook up GPS buttons using browser geolocation.
   if(role === 'transporter'){
     let watchId = null;
+    window.__gpsWatchId = null;
 
     const startBtn = document.getElementById('gpsStart');
     const stopBtn = document.getElementById('gpsStop');
@@ -335,6 +357,7 @@
         },
         {enableHighAccuracy:true, maximumAge:10000, timeout:15000}
       );
+      window.__gpsWatchId = watchId;
     });
 
     stopBtn.addEventListener('click', function(){
@@ -342,6 +365,7 @@
         navigator.geolocation.clearWatch(watchId);
       }
       watchId = null;
+      window.__gpsWatchId = null;
       setState(false);
       statusEl.textContent = 'Stopped.';
     });

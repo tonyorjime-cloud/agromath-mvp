@@ -30,10 +30,15 @@
               <div class="strong">{{ o.id }}</div>
               <div class="muted small">{{ o.origin }} → {{ o.dest }} · {{ o.created_at }}</div>
             </div>
-            <div class="status">{{ o.status }}</div>
+            <div class="status {% if o.status == 'DELIVERED' %}delivered{% endif %}">{{ o.status }}</div>
             <div>
-              <a class="btn btn-ghost" href="/track/{{ o.id }}">Track</a>
-              <a class="btn btn-ghost" href="/chat/{{ o.id }}">Chat</a>
+              {% if o.status == 'DELIVERED' %}
+                <a class="btn btn-ghost disabled" aria-disabled="true" href="#">Track</a>
+                <a class="btn btn-ghost disabled" aria-disabled="true" href="#">Chat</a>
+              {% else %}
+                <a class="btn btn-ghost" href="/track/{{ o.id }}">Track</a>
+                <a class="btn btn-ghost" href="/chat/{{ o.id }}">Chat</a>
+              {% endif %}
             </div>
           </div>
 

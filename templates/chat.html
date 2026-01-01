@@ -3,7 +3,10 @@
 <div class="row space">
   <div>
     <h2>Order Chat</h2>
-    <div class="muted">Order {{ order_id }} · Participants: buyer, farmer(s), accepted transporter</div>
+    <div class="muted">Order {{ order_id }} · Status: {{ status }}</div>
+    {% if chat_closed %}
+      <div class="badge accepted" style="margin-top:6px;">Delivered — chat closed</div>
+    {% endif %}
   </div>
   <div class="pillrow">
     <a class="btn btn-ghost" href="/orders">Back to Orders</a>
@@ -31,8 +34,8 @@
   <div class="spacer"></div>
 
   <div class="row">
-    <input id="msgInput" placeholder="Type a message…" style="flex:1;">
-    <button class="btn btn-primary" id="sendBtn" type="button">Send</button>
+    <input id="msgInput" placeholder="Type a message…" style="flex:1;" {% if chat_closed %}disabled{% endif %}>
+    <button class="btn btn-primary" id="sendBtn" type="button" {% if chat_closed %}disabled{% endif %}>Send</button>
   </div>
   <div class="muted small" id="sendStatus"></div>
 </div>
@@ -40,6 +43,7 @@
 <script>
 (function(){
   const orderId = "{{ order_id }}";
+  const chatClosed = {{ 'true' if chat_closed else 'false' }};
   const box = document.getElementById('chatBox');
   const input = document.getElementById('msgInput');
   const sendBtn = document.getElementById('sendBtn');
@@ -89,6 +93,13 @@
       if(!r.ok) return;
       const j = await r.json();
       if(!j.ok) return;
+      if(j.chat_closed){
+        statusEl.textContent = 'Chat closed (delivered).';
+        if(pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+        input.disabled = true;
+        sendBtn.disabled = true;
+        return;
+      }
       if(j.messages && j.messages.length){
         j.messages.forEach(renderMsg);
         scrollDown();
@@ -96,9 +107,16 @@
     }catch(e){}
   }
 
-  setInterval(poll, 3000);
+  let pollTimer = null;
+  if(!chatClosed){
+    pollTimer = setInterval(poll, 3000);
+  }
 
   async function send(){
+    if(chatClosed){
+      statusEl.textContent = 'Chat closed (delivered).';
+      return;
+    }
     const msg = (input.value || '').trim();
     if(!msg) return;
     sendBtn.disabled = true;
