@@ -4,9 +4,6 @@
   <meta charset="utf-8">
   <title>AgroMath MVP</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#0f5132">
-  <link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}">
-  <link rel="apple-touch-icon" href="{{ url_for('static', filename='icon-192.png') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
@@ -24,10 +21,12 @@
         {% if session.get("uid") %}
           <a class="navlink" href="/dashboard">Dashboard</a>
           <a class="navlink" href="/orders">Orders</a>
+          <a class="navlink" href="/help">Help</a>
           <a class="navlink" href="/profile">Profile</a>
           <a class="navlink" href="/logout">Logout</a>
         {% else %}
           <a class="navlink" href="/login">Login</a>
+          <a class="navlink" href="/help">Help</a>
         {% endif %}
       </div>
     </div>
@@ -47,14 +46,6 @@
     {% block content %}{% endblock %}
   </div>
 
-
-  <script>
-    (function(){
-      if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.register('{{ url_for('static', filename='sw.js') }}').catch(function(){});
-      }
-    })();
-  </script>
   <!-- Phase 1 notifications: in-app polling + unique sound -->
   {% if session.get("uid") %}
     <div id="agroToast" class="toast" style="display:none"></div>
@@ -148,7 +139,7 @@
 
   <div class="footer">
     <div class="container muted small">
-      Built for testing. No payments, no SMS, no escrow (yet).
+      Built for testing. <a href="/terms">Terms</a> · <a href="/privacy">Privacy</a>
     </div>
   </div>
 </body>

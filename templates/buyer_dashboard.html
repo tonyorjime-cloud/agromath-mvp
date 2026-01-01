@@ -4,7 +4,9 @@
 <div class="row space">
   <div>
     <h2>Buyer Dashboard</h2>
-    <div class="muted">Welcome{% if user.name %}, {{ user.name }}{% endif %}. Add items, then checkout and place an order.</div>
+    <div class="muted">
+      Welcome{% if user.name %}, {{ user.name }}{% endif %}. Search products, add items, then checkout and place an order.
+    </div>
   </div>
   <div class="pillrow">
     <a class="btn btn-ghost" href="/checkout">Cart ({{ cart_count }})</a>
@@ -14,34 +16,167 @@
 </div>
 
 <div class="card">
-  <h3>Products</h3>
-  <div class="muted small">Only approved farmers appear here.</div>
-
-  {% if products %}
-    <div class="table">
-      <div class="thead">
-        <div>Item</div><div>Farmer</div><div>Hub</div><div>Price</div><div></div>
+  <div class="row space" style="gap:12px; align-items:end;">
+    <form method="get" action="/buyer" class="row" style="gap:10px; flex-wrap:wrap; align-items:end;">
+      <div>
+        <div class="muted small">Search</div>
+        <input class="input" type="text" name="q" value="{{ q or '' }}" placeholder="Search products (e.g., beans)" style="min-width:240px;">
       </div>
 
-      {% for p in products %}
-        <div class="trow">
-          <div class="strong">{{ p.name }} <span class="muted small">({{ p.unit }})</span></div>
-          <div>{{ p.farmer_name or "—" }}</div>
-          <div class="muted">{{ p.farmer_hub or "—" }}</div>
-          <div><b>{{ money(p.price) }}</b></div>
+      <div>
+        <div class="muted small">Sort</div>
+        <select class="input" name="sort">
+          <option value="newest" {% if sort=='newest' %}selected{% endif %}>Newest</option>
+          <option value="nearest" {% if sort=='nearest' %}selected{% endif %}>Nearest</option>
+          <option value="price_asc" {% if sort=='price_asc' %}selected{% endif %}>Price (low → high)</option>
+          <option value="price_desc" {% if sort=='price_desc' %}selected{% endif %}>Price (high → low)</option>
+        </select>
+      </div>
+
+      <div>
+        <div class="muted small">Radius</div>
+        <select class="input" name="radius_km">
+          <option value="" {% if radius_km is none %}selected{% endif %}>Any</option>
+          {% for r in [2,5,10,20,50] %}
+            <option value="{{ r }}" {% if radius_km is not none and (radius_km|float) == (r|float) %}selected{% endif %}>Within {{ r }} km</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <button class="btn btn-primary" type="submit">Apply</button>
+      <a class="btn btn-ghost" href="/buyer">Reset</a>
+    </form>
+
+    <div style="text-align:right;">
+      <div class="muted small">Near Me</div>
+      <div class="row" style="gap:8px; justify-content:flex-end;">
+        <button class="btn btn-light" type="button" onclick="setNearMe()">Use my current location</button>
+        <button class="btn btn-ghost" type="button" onclick="clearNearMe()" {% if not has_buyer_loc %}disabled{% endif %}>Clear</button>
+      </div>
+      <div class="muted small" id="nearMeStatus" style="margin-top:6px;"></div>
+      <div class="muted small" style="margin-top:6px;">
+        {% if has_buyer_loc %}
+          Location set. Nearest/radius filters will work.
+        {% else %}
+          Set your location to enable “Nearest” and radius filtering.
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <hr>
+
+  {% if groups and groups|length > 0 %}
+    {% for g in groups %}
+      <div class="card" style="margin-bottom:14px;">
+        <div class="row space" style="align-items:center;">
           <div>
-            <form method="post" action="/cart/add" class="inline">
-              <input type="hidden" name="product_id" value="{{ p.id }}">
-              <input class="qty" name="qty" type="number" min="1" value="1" style="width:80px">
-              <button class="btn btn-primary" type="submit">Add</button>
-            </form>
+            <div class="strong">{{ g.farmer_name or "Farmer" }}</div>
+            <div class="muted small">
+              Pickup: {{ g.farmer_hub or "Not set" }}
+              {% if g.products and g.products[0].farmer_hub_lat and g.products[0].farmer_hub_lng %}
+                • GPS: {{ g.products[0].farmer_hub_lat }}, {{ g.products[0].farmer_hub_lng }}
+                <a class="link" target="_blank" rel="noopener"
+                   href="https://www.google.com/maps?q={{ g.products[0].farmer_hub_lat }},{{ g.products[0].farmer_hub_lng }}">View map</a>
+              {% endif %}
+            </div>
+          </div>
+          <div>
+            {% if g.distance_km is not none %}
+              <div class="pill muted small">{{ "%.1f"|format(g.distance_km) }} km away</div>
+            {% endif %}
           </div>
         </div>
-      {% endfor %}
-    </div>
+
+        <div class="grid" style="margin-top:10px;">
+          {% for p in g.products %}
+            <div class="card mini">
+              <div class="strong">{{ p.name }} <span class="muted small">({{ p.unit }})</span></div>
+              <div style="margin-top:10px;"><b>{{ money(p.price) }}</b></div>
+              <div style="margin-top:10px;">
+                <form method="post" action="/cart/add" class="row" style="gap:8px;">
+                  <input type="hidden" name="product_id" value="{{ p.id }}">
+                  <input class="qty" name="qty" type="number" min="1" value="1" style="width:90px">
+                  <button class="btn btn-primary" type="submit">Add</button>
+                </form>
+              </div>
+            </div>
+          {% endfor %}
+        </div>
+      </div>
+    {% endfor %}
   {% else %}
-    <p class="muted">No products yet. Ask a farmer to register and get approved.</p>
+    <p class="muted">No matching products found.</p>
   {% endif %}
 </div>
+
+<script>
+async function pingDebug(payload){
+  try{
+    await fetch('/api/debug/location_ping', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
+  }catch(e){ /* ignore */ }
+}
+
+function setNearMeStatus(msg){
+  const el = document.getElementById('nearMeStatus');
+  if(el) el.textContent = msg || '';
+}
+
+async function setNearMe() {
+  if (!navigator.geolocation) {
+    setNearMeStatus("Geolocation is not supported on this device/browser.");
+    pingDebug({ role:'buyer', page:'buyer_near_me', error_message:'geolocation_not_supported' });
+    return;
+  }
+  if (typeof window.isSecureContext !== 'undefined' && !window.isSecureContext) {
+    setNearMeStatus("Location requires HTTPS. Please open the https:// version of this site and try again.");
+    pingDebug({ role:'buyer', page:'buyer_near_me', error_message:'insecure_context' });
+    return;
+  }
+  setNearMeStatus('Getting GPS…');
+  navigator.geolocation.getCurrentPosition(async (pos) => {
+    const payload = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+    try {
+      const res = await fetch("/buyer/location", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || "Unable to set location.");
+      setNearMeStatus(`Captured: ${payload.lat.toFixed(5)}, ${payload.lng.toFixed(5)}`);
+      pingDebug({ role:'buyer', page:'buyer_near_me', lat: payload.lat, lng: payload.lng, accuracy: pos.coords.accuracy });
+      // Refresh to apply nearest/radius
+      window.location.reload();
+    } catch (e) {
+      setNearMeStatus(e.message || "Unable to set location.");
+      pingDebug({ role:'buyer', page:'buyer_near_me', error_message: (e && e.message) ? e.message : 'unable_to_set_location' });
+    }
+  }, (err) => {
+    const code = err && typeof err.code !== 'undefined' ? err.code : '';
+    const msg = err && err.message ? err.message : 'Unknown error';
+    setNearMeStatus(`GPS error${code ? ' ('+code+')' : ''}: ${msg}`);
+    pingDebug({ role:'buyer', page:'buyer_near_me', error_code: code, error_message: msg });
+  }, { enableHighAccuracy: true, timeout: 15000 });
+}
+
+async function clearNearMe() {
+  try {
+    const res = await fetch("/buyer/location/clear", { method: "POST" });
+    const data = await res.json();
+    if (!data.ok) throw new Error("Unable to clear location.");
+    setNearMeStatus('Cleared.');
+    pingDebug({ role:'buyer', page:'buyer_near_me_clear' });
+    window.location.reload();
+  } catch (e) {
+    setNearMeStatus("Unable to clear location.");
+    pingDebug({ role:'buyer', page:'buyer_near_me_clear', error_message:'unable_to_clear' });
+  }
+}
+</script>
 
 {% endblock %}

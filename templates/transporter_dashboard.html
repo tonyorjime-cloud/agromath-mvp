@@ -4,7 +4,7 @@
 <div class="row space">
   <div>
     <h2>Transporter Dashboard</h2>
-    <div class="muted">Quote open orders. When a buyer accepts your quote, deliver and mark it delivered.</div>
+    <div class="muted">Quote open orders. After acceptance: Start trip → Picked up → Delivered. Use Track for navigation.</div>
   </div>
   <div class="pillrow">
     <a class="btn btn-ghost" href="/orders">Orders</a>
@@ -23,6 +23,14 @@
               <div>
                 <div class="strong">{{ o.id }}</div>
                 <div class="muted small">{{ o.origin }} → {{ o.dest }} · {{ o.created_at }}</div>
+                {% if o.distance_km %}
+                  <div class="muted small">Distance: <b>{{ "%.1f"|format(o.distance_km) }} km</b></div>
+                  {% if o.suggested %}
+                    <div class="muted small">Suggested ({{ o.suggested.band }}): <b>{{ money(o.suggested.low) }} – {{ money(o.suggested.high) }}</b> <span class="muted">(guidance)</span></div>
+                  {% endif %}
+                {% else %}
+                  <div class="muted small">Distance: <span class="muted">not available (farmer/buyer GPS missing)</span></div>
+                {% endif %}
                 <div class="muted small">Existing quotes: {{ o.quote_count }}</div>
               </div>
               <div class="status">{{ o.status }}</div>
@@ -59,10 +67,27 @@
             </div>
 
             <div class="spacer"></div>
-            <form method="post" action="/transport/deliver" class="inline">
-              <input type="hidden" name="order_id" value="{{ o.id }}">
-              <button class="btn btn-dark" type="submit">Mark Delivered</button>
-            </form>
+            
+            <div class="row" style="gap:10px; flex-wrap:wrap;">
+              <a class="btn btn-ghost" href="/track/{{ o.id }}">Track</a>
+              {% if o.status == 'QUOTE_ACCEPTED' %}
+                <form method="post" action="/transport/start" class="inline">
+                  <input type="hidden" name="order_id" value="{{ o.id }}">
+                  <button class="btn btn-primary" type="submit">Start Trip (to pickup)</button>
+                </form>
+              {% elif o.status == 'EN_ROUTE_TO_PICKUP' %}
+                <form method="post" action="/transport/pickedup" class="inline">
+                  <input type="hidden" name="order_id" value="{{ o.id }}">
+                  <button class="btn btn-primary" type="submit">Picked Up (go to buyer)</button>
+                </form>
+              {% elif o.status == 'EN_ROUTE_TO_DROPOFF' %}
+                <form method="post" action="/transport/deliver" class="inline">
+                  <input type="hidden" name="order_id" value="{{ o.id }}">
+                  <button class="btn btn-primary" type="submit">Mark Delivered</button>
+                </form>
+              {% endif %}
+            </div>
+
           </div>
         {% endfor %}
       </div>
