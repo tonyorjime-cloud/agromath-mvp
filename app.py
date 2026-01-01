@@ -356,9 +356,13 @@ def ensure_schema_postgres() -> None:
                 );
             """)
 
-# Ensure new columns exist (lightweight migrations)
-cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS farmer_user_id INTEGER;")
-cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS tracking_enabled INTEGER NOT NULL DEFAULT 0;")
+
+            # Ensure new columns exist (lightweight migrations)
+            # These statements must remain inside the connection scope.
+            cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS farmer_user_id INTEGER;")
+            cur.execute(
+                "ALTER TABLE orders ADD COLUMN IF NOT EXISTS tracking_enabled INTEGER NOT NULL DEFAULT 0;"
+            )
 
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS order_items(
